@@ -60,6 +60,9 @@ def get_outfit_suggestion(temp: float, weather: str) -> str:
     return suggestion
 
 
+
+
+
 async def _fetch_weather_from_openweathermap(params: dict) -> dict:
     try:
         async with httpx.AsyncClient(trust_env=False) as client:
