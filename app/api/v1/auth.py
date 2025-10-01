@@ -1,5 +1,3 @@
-
-
 #api/v1/auth.py
 from fastapi import APIRouter, HTTPException, Depends, Form, Request
 from sqlalchemy.orm import Session
@@ -21,18 +19,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # 初始化 Firebase Admin（只初始化一次）
-if not _apps:
+if not firebase_admin._apps:
     firebase_key_path = os.getenv("FIREBASE_KEY_PATH")
     if not firebase_key_path or not os.path.exists(firebase_key_path):
         raise FileNotFoundError(f"[錯誤] 找不到 Firebase 金鑰檔案，請確認環境變數 FIREBASE_KEY_PATH 設定正確，目前值：{firebase_key_path}")
-    
     cred = credentials.Certificate(firebase_key_path)
-    initialize_app(cred)
-from firebase_admin import credentials, auth as firebase_auth
-
-# 初始化 Firebase Admin（只初始化一次）
-if not firebase_admin._apps:
-    cred = credentials.Certificate("firebase-admin-key.json")
     firebase_admin.initialize_app(cred)
 
 logging.basicConfig(level=logging.INFO)
@@ -66,25 +57,53 @@ def get_current_user(
 def ping():
     return {"message": "pong"}
 
+
+# @router.post("/register")
+# def register_user(
+#     email: str = Form(...),
+#     password: str = Form(...),
+#     username: str = Form(...),
+#     db: Session = Depends(get_db)
+# ):
+#     # 先檢查本地 DB
+#     if db.query(User).filter(User.username == username).first():
+#         raise HTTPException(status_code=400, detail="使用者名稱已被註冊")
+#     if db.query(User).filter(User.email == email).first():
+#         raise HTTPException(status_code=400, detail="電子郵件已被註冊")
+
+#     try:
+#         # 呼叫 Firebase 建立帳號
+#         user_record = firebase_auth.create_user(
+#             email=email,
+#             password=password,
+#             display_name=username,
+#         )
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Firebase 建立帳號失敗: {str(e)}")
+
+#     # 存進本地 DB
+#     new_user = User(
+#         username=username,
+#         email=email,
+#         firebase_uid=user_record.uid
+#     )
+#     db.add(new_user)
+#     db.commit()
+#     db.refresh(new_user)
+
+#     return {
+#         "msg": "使用者建立成功",
+#         "uid": user_record.uid,
+#         "email": email,
+#         "username": username
+#     }
+
 @router.post("/register")
-def register_by_firebase(
-    decoded_token: dict = Depends(verify_firebase_token),
+async def register_user(
     username: str = Form(...),
-    db: Session = Depends(get_db)
+    password: str = Form(...)
 ):
-    firebase_uid = decoded_token.get("uid")
-    email = decoded_token.get("email")
-
-    if db.query(User).filter(User.username == username).first():
-        raise HTTPException(status_code=400, detail="使用者名稱已被註冊")
-    if db.query(User).filter(User.email == email).first():
-        raise HTTPException(status_code=400, detail="電子郵件已被註冊")
-
-    new_user = User(username=username, email=email, firebase_uid=firebase_uid)
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    return {"msg": "使用者建立成功"}
+    return {"message": f"User {username} registered successfully (mock)"}
 
 @router.post("/login")
 def firebase_login(decoded_token: dict = Depends(verify_firebase_token)):
@@ -130,4 +149,28 @@ def get_me(user: User = Depends(get_current_user)):
 #         "email": user.email
 #     }
 
- 
+@router.get("/test-firebase")
+def test_firebase():
+    """
+    測試 Firebase Admin 是否正常運作
+    會嘗試建立一個測試帳號，成功則回傳 UID
+    """
+    test_email = f"test{int(datetime.utcnow().timestamp())}@example.com"
+    test_password = "Test1234"
+    test_display_name = "測試用戶"
+
+    try:
+        user_record = firebase_auth.create_user(
+            email=test_email,
+            password=test_password,
+            display_name=test_display_name
+        )
+        # 建立成功後立刻刪掉帳號，避免污染 Firebase
+        firebase_auth.delete_user(user_record.uid)
+        return {
+            "msg": "Firebase 測試成功",
+            "uid": user_record.uid,
+            "email": test_email
+        }
+    except Exception as e:
+        return {"msg": "Firebase 測試失敗", "error": str(e)}
