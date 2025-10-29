@@ -9,7 +9,7 @@ class AIClothingAnalysis(BaseModel):
     """
     Gemini AI 對衣物的分析結果
     """
-    category: str = "特殊"  # 衣物類別
+    category: str = "special"  # 衣物類別
     colors: List[str] = []  # 顏色列表
     style: str = ""  # 風格
     material: str = ""  # 材質

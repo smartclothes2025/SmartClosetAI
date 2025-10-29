@@ -29,10 +29,10 @@ class SessionLocal:
     def query(self, model):
         # 模擬資料庫中有一些衣物
         return [
-            ClothingItem(category="上衣", name="白色T恤", cover_image_url="top1.png"),
-            ClothingItem(category="褲子", name="藍色牛仔褲", cover_image_url="pants1.png"),
-            ClothingItem(category="鞋子", name="休閒運動鞋", cover_image_url="shoes1.png"),
-            ClothingItem(category="外套", name="黑色夾克", cover_image_url="jacket1.png"),
+            ClothingItem(category="tops", name="白色T恤", cover_image_url="top1.png"),
+            ClothingItem(category="pants", name="藍色牛仔褲", cover_image_url="pants1.png"),
+            ClothingItem(category="shoes", name="休閒運動鞋", cover_image_url="shoes1.png"),
+            ClothingItem(category="outerwear", name="黑色夾克", cover_image_url="jacket1.png"),
         ]
     def all(self):
         return self.query(ClothingItem)
@@ -48,22 +48,22 @@ logger = logging.getLogger(__name__)
 class FashionAdvisor:
 
     CATEGORY_MAP = {
-        "上衣": "上衣",
-        "褲子": "下身",
-        "裙子": "下身",
-        "洋裝": "下身", # 洋裝也歸類到下身來簡化處理
-        "外套": "外套",
-        "鞋子": "鞋子",
-        "配件": "配件",
+        "tops": "tops",
+        "pants": "bottoms",
+        "skirts": "bottoms",
+        "dresses": "bottoms", # 洋裝也歸類到下身來簡化處理
+        "outerwear": "outerwear",
+        "shoes": "shoes",
+        "accessories": "accessories",
     }
     
     # 這個目錄映射用於從 'uploads' 中找到原始圖片的路徑
     CATEGORY_DIR_MAP = {
-        "上衣": "上衣",
-        "下身": "褲子", # 假設褲子和裙子都放在 '褲子' 目錄下
-        "鞋子": "鞋子",
-        "外套": "外套",
-        "配件": "包包",
+        "tops": "tops",
+        "bottoms": "pants", # 假設褲子和裙子都放在 'pants' 目錄下
+        "shoes": "shoes",
+        "outerwear": "outerwear",
+        "accessories": "bags",
     }
     
     def __init__(self, wardrobe_root: str = "uploads"): # 假設圖片上傳到 'uploads'

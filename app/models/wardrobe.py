@@ -7,18 +7,20 @@ from enum import Enum
 from pathlib import Path
 
 class CategoryEnum(str, Enum):
-    TOP = "上衣"
-    SKIRT = "裙子"
-    PANTS = "褲子"
-    DRESS = "洋裝"
-    OUTER = "外套"
-    SHOES = "鞋子"
-    HAT = "帽子"
-    BAG = "包包"
-    ACCESSORY = "配件"
-
-class WardrobeItem(Base):
-    __tablename__ = "wardrobe_items"
+    TOP = "tops"
+    SKIRT = "skirts"
+    PANTS = "pants"
+    DRESS = "dresses"
+    OUTER = "outerwear"
+    SHOES = "shoes"
+    HAT = "hats"
+    BAG = "bags"
+    ACCESSORY = "accessories"
+    BOTTOMS = "bottoms"
+    SPECIAL = "special"
+    JEWELRY = "jewelry"
+    PANTSUITS = "pantsuits"
+    SOCKS = "socks"
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("app_users.id"), nullable=True)
     category = Column(

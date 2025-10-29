@@ -1,5 +1,5 @@
-#auth.py
-from fastapi import APIRouter, HTTPException, Depends, Form, Request, Body
+# app/api/v1/auth.py
+from fastapi import APIRouter, HTTPException, Depends, Form, Request
 from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.models.auth import User
@@ -11,7 +11,6 @@ from dotenv import load_dotenv
 from datetime import datetime, timezone
 import os
 import uuid as _uuid
-import google.auth
 from pydantic import BaseModel
 
 load_dotenv()
@@ -19,17 +18,19 @@ logging.basicConfig(level=logging.INFO)
 
 router = APIRouter()
 
-firebase_key_path = os.getenv("FIREBASE_KEY_PATH")
-if not firebase_key_path or not os.path.exists(firebase_key_path):
+# 讀取 Firebase 金鑰路徑（優先用環境變數）
+firebase_key_path = os.getenv("FIREBASE_KEY_PATH") or "firebase-admin-key.json"
+if not os.path.exists(firebase_key_path):
     raise FileNotFoundError(f"[錯誤] 找不到 Firebase 金鑰檔案，目前值：{firebase_key_path}")
 
+# 初始化 Firebase（避免重複初始化）
 if not _apps:
-    cred = credentials.Certificate("firebase-admin-key.json") 
+    cred = credentials.Certificate(firebase_key_path)
     firebase_admin.initialize_app(cred)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# Common constants to avoid literal duplication and ease maintenance
+# 共用常數
 AUTH_BEARER_PREFIX = "Bearer "
 ERR_INVALID_TOKEN = "Token 無效"
 ERR_USER_NOT_FOUND = "使用者不存在"
@@ -43,49 +44,54 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
 
-# 驗證 Firebase Token
+# ── Firebase Token 驗證（若前端走 Firebase 登入用） ─────────────────────────────
 def verify_firebase_token(request: Request):
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith(AUTH_BEARER_PREFIX):
         raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
-    
-    id_token = auth_header.split(" ")[1]
+
+    id_token = auth_header.split(" ", 1)[1]
     try:
         decoded_token = firebase_auth.verify_id_token(id_token)
-        logging.info(f"Firebase token 驗證成功: {decoded_token['email']}")
+        logging.info(f"Firebase token 驗證成功: {decoded_token.get('email')}")
         return decoded_token
     except Exception as e:
         logging.error(f"Firebase token 驗證失敗: {str(e)}")
         raise HTTPException(status_code=401, detail="Invalid Firebase token")
 
 
-def get_current_user(request: Request, db: Session = Depends(get_db), token: str = Form(None)):
+# ── 取得目前使用者（支援 Header Bearer token 或 Form token） ──────────────────
+def get_current_user(
+    request: Request,
+    db: Session = Depends(get_db),
+    token: str = Form(None)
+):
     """
-    從 Header 的 Authorization Bearer token 或 Form 中的 token 進行驗證。
-    臨時用的簡易 token：格式為 "user-<uuid>-token"。
+    從 Header 的 Authorization: Bearer user-<uuid>-token 或表單欄位 token 驗證使用者。
+    臨時 token 制式：user-<uuid>-token（僅開發用；建議改為正式 JWT）。
     """
-    # 優先從 Header 中獲取 Bearer token
+    # 1) 優先讀 Header Bearer
     auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
+    if auth_header.startswith(AUTH_BEARER_PREFIX):
         token = auth_header.split(" ", 1)[1]
-    
-    # 如果沒有獲得 token，檢查 Form 中的 token
+
+    # 2) 無 token
     if not token:
         raise HTTPException(status_code=401, detail=ERR_INVALID_TOKEN)
-    
+
     prefix = "user-"
     suffix = "-token"
-    if not isinstance(token, str) or not token.startswith(prefix) or not token.endswith(suffix):
+    if not (isinstance(token, str) and token.startswith(prefix) and token.endswith(suffix)):
         raise HTTPException(status_code=401, detail=ERR_INVALID_TOKEN)
 
-    # 只移除前後綴，保留中間的完整 UUID（含連字符）
-    user_id = token[len(prefix):-len(suffix)] if len(token) > (len(prefix)+len(suffix)) else ""
-    # 驗證 UUID 格式，避免傳入無效字串造成 DB Driver 錯誤
+    # 3) 解析 UUID（只去前後綴）
+    user_id = token[len(prefix):-len(suffix)] if len(token) > (len(prefix) + len(suffix)) else ""
     try:
-        _uuid.UUID(user_id)
+        _uuid.UUID(user_id)  # 驗證格式
     except Exception:
         raise HTTPException(status_code=401, detail=ERR_INVALID_TOKEN)
 
+    # 4) 查 DB
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail=ERR_USER_NOT_FOUND)
@@ -134,8 +140,8 @@ def register_user(
     db.commit()
     db.refresh(user)
     return {
-      "token": f"user-{user.id}-token",
-            "user": {"id": user.id, "email": user.email, "display_name": user.display_name, "role": user.role}
+        "token": f"user-{user.id}-token",
+        "user": {"id": user.id, "email": user.email, "display_name": user.display_name, "role": user.role}
     }
 
 
@@ -146,17 +152,16 @@ def login_user(
     email: str = Form(None),
     password: str = Form(None)
 ):
-    # 1. 嘗試用 Firebase Token 驗證
+    # 1) 先嘗試 Firebase Token
     auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        id_token = auth_header.split(" ")[1]
+    if auth_header and auth_header.startswith(AUTH_BEARER_PREFIX):
+        id_token = auth_header.split(" ", 1)[1]
         try:
             decoded_token = firebase_auth.verify_id_token(id_token)
             email_from_token = decoded_token.get("email")
             display_name = decoded_token.get("name") or email_from_token or "User"
             user = db.query(User).filter(User.email == email_from_token).first()
             if not user:
-                # 若本地沒資料，自動補一筆
                 user = User(
                     email=email_from_token,
                     display_name=display_name,
@@ -179,7 +184,7 @@ def login_user(
         except Exception as e:
             raise HTTPException(status_code=401, detail=f"Firebase token 驗證失敗: {str(e)}")
 
-    # 2. 沒帶 Token，走本地帳密驗證
+    # 2) 沒帶 Firebase Token，走本地帳密
     if not email or not password:
         raise HTTPException(status_code=400, detail="請提供 email 和 password 或 Firebase Token")
 
@@ -207,12 +212,14 @@ def delete_user(user_id: str, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "ok"}
 
+
 class RoleUpdate(BaseModel):
     role: str
 
+
 @router.put("/users/{user_id}/role")
 def update_user_role(user_id: str, payload: RoleUpdate, request: Request, db: Session = Depends(get_db)):
-
+    # 取得呼叫者身分
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith(AUTH_BEARER_PREFIX):
         raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
@@ -224,7 +231,6 @@ def update_user_role(user_id: str, payload: RoleUpdate, request: Request, db: Se
         raise HTTPException(status_code=401, detail=ERR_INVALID_TOKEN)
 
     caller_id_raw = token[len(prefix):-len(suffix)] if len(token) > (len(prefix) + len(suffix)) else ""
-    # try convert to int when possible (DB id is Integer in this project)
     try:
         caller_id = int(caller_id_raw)
     except Exception:
@@ -234,7 +240,7 @@ def update_user_role(user_id: str, payload: RoleUpdate, request: Request, db: Se
     if not caller:
         raise HTTPException(status_code=404, detail=ERR_USER_NOT_FOUND)
 
-    # find target user
+    # 目標使用者
     try:
         target_id = int(user_id)
     except Exception:
@@ -251,18 +257,13 @@ def update_user_role(user_id: str, payload: RoleUpdate, request: Request, db: Se
     db.commit()
     db.refresh(target)
 
-    return {
-        "id": target.id,
-        "role": target.role,
-    }
-
+    return {"id": target.id, "role": target.role}
 
 
 @router.get("/me")
 def get_me(request: Request, db: Session = Depends(get_db)):
     """
-    以 Authorization Bearer user-<id>-token 取得當前使用者，
-    回傳 app_users (User) 的 display_name 與 email。
+    以 Authorization Bearer user-<id>-token 取得當前使用者，回傳基本資料。
     """
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith(AUTH_BEARER_PREFIX):
@@ -302,34 +303,23 @@ def test_firebase():
             display_name=test_display_name
         )
         firebase_auth.delete_user(user_record.uid)
-        return {
-            "msg": "Firebase 測試成功",
-            "email": test_email
-        }
+        return {"msg": "Firebase 測試成功", "email": test_email}
     except Exception as e:
         return {"msg": "Firebase 測試失敗", "error": str(e)}
 
 
+# （選用）Google 憑證偵錯：若你未安裝 google-auth，此端點也不會在 import 階段報錯
 @router.get("/debug/gcloud")
 def debug_gcloud():
-    """Debug endpoint: show which Google credentials and project are being used by the server.
-
-    Note: this will not return any private key contents. It returns credential type, project id,
-    client/service account email when available, and related env vars (GCS bucket, upload switch).
-    """
     try:
+        import google.auth  # 延遲載入，避免無此套件時影響主流程
         creds, project = google.auth.default()
     except Exception as e:
         return {"error": f"google.auth.default() failed: {e}"}
 
     email = getattr(creds, "service_account_email", None) or getattr(creds, "client_email", None)
     gac = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    gac_name = None
-    if gac:
-        try:
-            gac_name = gac.split(os.sep)[-1]
-        except Exception:
-            gac_name = gac
+    gac_name = os.path.basename(gac) if gac else None
 
     return {
         "project": project,
@@ -339,4 +329,3 @@ def debug_gcloud():
         "GCS_BUCKET_NAME": os.getenv("GCS_BUCKET_NAME"),
         "UPLOAD_TO_GCS": os.getenv("UPLOAD_TO_GCS"),
     }
-

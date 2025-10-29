@@ -91,17 +91,19 @@ def gemini_classify_image(image_path: str) -> dict:
 }
 
 類別選項（必選其一）：
-- 上衣（T恤、襯衫、毛衣等）
-- 褲子（牛仔褲、長褲、短褲等）
-- 裙子
-- 外套（夾克、大衣等）
-- 洋裝（連身裙）
-- 鞋子
-- 包包
-- 帽子
-- 襪子
-- 飾品
-- 特殊
+- tops (T-shirts, shirts, sweaters, etc.)
+- pants (jeans, trousers, shorts, etc.)
+- skirts
+- outerwear (jackets, coats, etc.)
+- dresses
+- shoes
+- bags
+- hats
+- socks
+- jewelry
+- special
+- bottoms
+- pantsuits
 
 顏色選項：黑、白、灰、紅、粉、橘、黃、綠、藍、紫、棕、米、其他
 
@@ -157,7 +159,7 @@ def gemini_classify_image(image_path: str) -> dict:
 def get_default_classification() -> dict:
     """當 Gemini 失敗時的默認分類"""
     return {
-        "category": "特殊",
+        "category": "special",
         "colors": [],
         "style": "",
         "material": "",

@@ -8,18 +8,14 @@ import logging, os
 from app.api.v1.router import api_router
 from app.core.config import settings
 from sqlalchemy import create_engine
-
-# 首先加載環境變數
-load_dotenv()
+from dotenv import load_dotenv # 必須先安裝： pip install python-dotenv
 
 engine = create_engine(settings.DATABASE_URL)
 
+load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="SmartClosetAI API")
-
-
-
 
 # CORS：多加 5175 埠，或開發時全部允許 "*"
 app.add_middleware(
