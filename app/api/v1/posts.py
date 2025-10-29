@@ -41,13 +41,33 @@ def current_user_from_header(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_strict),
     db: Session = Depends(get_db),
 ):
+    """從 Authorization Bearer 取得當前使用者"""
     if not credentials or not credentials.credentials:
         raise HTTPException(status_code=401, detail="未提供 Authorization Bearer")
+    
     token = credentials.credentials
+    prefix = "user-"
+    suffix = "-token"
+    
+    # 驗證 token 格式
+    if not (isinstance(token, str) and token.startswith(prefix) and token.endswith(suffix)):
+        raise HTTPException(status_code=401, detail="登入已過期或無效")
+    
+    # 解析使用者 ID
+    user_id = token[len(prefix):-len(suffix)] if len(token) > (len(prefix) + len(suffix)) else ""
+    
     try:
-        return get_current_user(token=token, db=db)
+        _uuid.UUID(user_id)  # 驗證 UUID 格式
     except Exception:
         raise HTTPException(status_code=401, detail="登入已過期或無效")
+    
+    # 查詢資料庫
+    from app.models.auth import User
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="使用者不存在")
+    
+    return user
 
 
 def _sanitize_name(raw: str) -> str:
@@ -85,10 +105,44 @@ async def create_post(
         await file.seek(0)
         file_bytes = await file.read()
         ext = (Path(file.filename).suffix or ".jpg").lower()
-        stem = _sanitize_name(Path(file.filename).stem or title or "post")
+        
+        # ✅ 使用貼文標題作為檔名（優先），否則使用原始檔名
+        if title and title.strip():
+            stem = _sanitize_name(title.strip())
+        else:
+            stem = _sanitize_name(Path(file.filename).stem or "post")
 
-        # 物件路徑 & MIME
-        object_name = f"posts/{getattr(current_user, 'id', 'unknown')}/{stem}{ext}".lstrip("/")
+        # ✅ 處理重複檔名：檢查是否存在，存在則加上 _1, _2, ...
+        user_folder = f"posts/{getattr(current_user, 'id', 'unknown')}"
+        base_object_name = f"{user_folder}/{stem}{ext}"
+        object_name = base_object_name
+        
+        # 檢查檔案是否存在，如果存在就加上數字後綴
+        client = None
+        try:
+            from google.cloud import storage as gcs_storage
+            client = gcs_storage.Client()
+            bucket = client.bucket(GCS_BUCKET_POST)
+            
+            counter = 1
+            while bucket.blob(object_name).exists():
+                object_name = f"{user_folder}/{stem}_{counter}{ext}"
+                counter += 1
+                if counter > 100:  # 安全上限，避免無限迴圈
+                    logger.warning(f"檔名重複次數過多，使用時間戳: {stem}")
+                    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+                    object_name = f"{user_folder}/{stem}_{timestamp}{ext}"
+                    break
+            
+            if counter > 1:
+                logger.info(f"檔名重複，使用: {object_name}")
+        except Exception as e:
+            logger.warning(f"無法檢查檔案是否存在，使用原始檔名: {e}")
+            object_name = base_object_name
+        
+        object_name = object_name.lstrip("/")
+        
+        # MIME type
         mime = "image/jpeg"
         if ext == ".png":
             mime = "image/png"
@@ -123,10 +177,11 @@ async def create_post(
         if vis not in ALLOWED_VISIBILITY:
             vis = "public"
 
+        # ✅ 資料庫只儲存 gcs_uri (短的 gs:// 格式)
+        # url 會在讀取時動態生成
         media_obj = [{
             "type": "image",
             "gcs_uri": gcs_uri,
-            "url": https_url,
             "is_cover": True
         }]
 

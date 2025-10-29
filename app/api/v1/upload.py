@@ -196,17 +196,24 @@ async def upload_image(
         orig_ext = Path(file_obj.filename).suffix or ".jpg"
         final_contents = contents
 
-        # 檔名處理 (修正：使用更安全的邏輯並加入日誌)
-        stem_from_file = Path(file_obj.filename).stem or ""
-        raw_name_to_use = stem_from_file.strip() or (name or "").strip() or "file"
-
-        # 確保不會因為字元被取代為 _ 而導致檔案名過短
-        safe_stem = raw_name_to_use.replace(" ", "_").strip() or "file"
-
-
-        logging.info(f"[upload-debug] 原始檔名 (Stem): {stem_from_file}")
-        logging.info(f"[upload-debug] 表單 Name: {name}")
-        logging.info(f"[upload-debug] 最終使用的 Stem: {safe_stem}")  
+        # 檔名處理：優先使用者輸入的 name，否則使用原始檔名
+        user_input_name = (name or "").strip()
+        original_stem = Path(file_obj.filename).stem or ""
+        
+        # 決定使用哪個名稱
+        if user_input_name:
+            # 使用者有輸入名稱，使用它
+            final_stem = user_input_name.replace(" ", "_")
+        else:
+            # 沒有輸入，使用原始檔名
+            final_stem = original_stem.replace(" ", "_") if original_stem else "untitled"
+        
+        # 確保檔名不為空
+        final_stem = final_stem.strip() or "untitled"
+        
+        logging.info(f"[upload] 使用者輸入名稱: {user_input_name}")
+        logging.info(f"[upload] 原始檔名: {original_stem}")
+        logging.info(f"[upload] 最終檔名: {final_stem}")  
                 
         # 去背（PNG）
         is_bg_removed = False
@@ -231,64 +238,79 @@ async def upload_image(
                 final_ext = orig_ext
                 is_bg_removed = False
 
-        # 寫檔（使用英文 category 決定路徑）
-        dest_folder = _get_dest_folder(category_en)
-        dest_folder.mkdir(parents=True, exist_ok=True)
-
-        candidate = f"{safe_stem}{final_ext}"
-        save_path = dest_folder / candidate
-        if save_path.exists():
-            stamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-            save_path = dest_folder / f"{safe_stem}_{stamp}{final_ext}"
-
-        try:
-            with open(save_path, "wb") as buf:
-                buf.write(final_contents)
-        except Exception as e:
-            logging.error(f"[upload] 檔案儲存失敗：{e}")
-            raise HTTPException(status_code=400, detail="檔案儲存失敗")
-
-        # 🎯 定義本地公開路徑 (前端可直接使用的 URL)
-        cover_rel_path = f"{dest_folder.as_posix()}/{save_path.name}"
-        local_public_url = f"/{cover_rel_path.lstrip('/')}" # e.g., /uploads/上衣/file.png
-
-        # 上傳到 GCS（若啟用）
+        # ✅ 生成檔名並處理重複：如果遇到相同檔名，加上 _1, _2, ...
+        base_filename = f"{final_stem}{final_ext}"
+        unique_filename = base_filename
+        
+        # 上傳到 GCS（必須啟用）
         gcs_uri = None # gs:// 格式，用於 DB 儲存
         gcs_signed_url = None # http(s):// 格式，用於 API 返回
         
-        if HAS_GCS and not SKIP_GCS_UPLOAD:
-            gcs_blob_path = f"avatars/{user_id_str}/{save_path.name}"
+        if not HAS_GCS:
+            raise HTTPException(status_code=500, detail="GCS 服務未啟用，無法上傳圖片")
+        
+        if SKIP_GCS_UPLOAD:
+            raise HTTPException(status_code=500, detail="GCS 上傳已被停用，請檢查環境變數設定")
+        
+        # ✅ 檢查檔案是否存在，如果存在就加上數字後綴
+        user_folder = f"wardrobe/{user_id_str}/{category_en}"
+        base_gcs_path = f"{user_folder}/{base_filename}"
+        gcs_blob_path = base_gcs_path
+        
+        try:
+            from google.cloud import storage as gcs_storage
+            client = gcs_storage.Client()
+            bucket = client.bucket(GCS_BUCKET_NAME)
             
-            # 決定 MIME type
-            if final_ext.lower() == ".png":
-                mime_type = "image/png"
-            elif final_ext.lower() in [".jpg", ".jpeg"]:
-                mime_type = "image/jpeg"
-            else:
-                mime_type = "image/jpeg"
+            counter = 1
+            while bucket.blob(gcs_blob_path).exists():
+                # 分離檔名和副檔名
+                stem_only = final_stem
+                unique_filename = f"{stem_only}_{counter}{final_ext}"
+                gcs_blob_path = f"{user_folder}/{unique_filename}"
+                counter += 1
+                if counter > 100:  # 安全上限
+                    logging.warning(f"[upload] 檔名重複次數過多，使用時間戳: {final_stem}")
+                    from datetime import datetime
+                    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+                    unique_filename = f"{stem_only}_{timestamp}{final_ext}"
+                    gcs_blob_path = f"{user_folder}/{unique_filename}"
+                    break
             
-            try:
-                logging.info(f"[upload] 🚀 嘗試上傳 GCS 到路徑: {gcs_blob_path} (Bucket: {GCS_BUCKET_NAME})")
-                
-                # 這裡的 gcs_uri 是 gs:// 格式
-                gcs_uri = upload_file_to_gcs_from_bytes(
-                    file_bytes=final_contents,
-                    destination_blob_name=gcs_blob_path,
-                    mime_type=mime_type,
-                    bucket_name=GCS_BUCKET_NAME,
-                    public=False
-                )
-                logging.info(f"[upload] ✅ GCS 上傳成功：{gcs_uri}")
-                
-                # 🎯 修正點 2-A: 嘗試生成前端可用的簽名 URL
-                gcs_signed_url = generate_signed_url_from_gcs_uri(gcs_uri)
-                logging.info(f"[upload] 🔑 成功生成 GCS 簽名 URL: {gcs_signed_url}")
-                
-            except Exception as e:
-                logging.error(f"[upload] ❌ GCS 上傳或簽名 URL 生成失敗，詳細錯誤如下：{e}", exc_info=True)
-                gcs_uri = None
-                gcs_signed_url = None
-                # 注意：此處我們仍維持不中斷主流程的邏輯。
+            if counter > 1:
+                logging.info(f"[upload] 檔名重複，使用: {unique_filename}")
+        except Exception as e:
+            logging.warning(f"[upload] 無法檢查檔案是否存在，使用原始檔名: {e}")
+            gcs_blob_path = base_gcs_path
+        
+        # 決定 MIME type
+        if final_ext.lower() == ".png":
+            mime_type = "image/png"
+        elif final_ext.lower() in [".jpg", ".jpeg"]:
+            mime_type = "image/jpeg"
+        else:
+            mime_type = "image/jpeg"
+        
+        try:
+            logging.info(f"[upload] 🚀 上傳到 GCS: {gcs_blob_path} (Bucket: {GCS_BUCKET_NAME})")
+            
+            # 上傳到 GCS
+            gcs_uri = upload_file_to_gcs_from_bytes(
+                file_bytes=final_contents,
+                destination_blob_name=gcs_blob_path,
+                mime_type=mime_type,
+                bucket_name=GCS_BUCKET_NAME,
+                public=False
+            )
+            logging.info(f"[upload] ✅ GCS 上傳成功：{gcs_uri}")
+            
+            # 生成簽名 URL
+            gcs_signed_url = generate_signed_url_from_gcs_uri(gcs_uri)
+            logging.info(f"[upload] 🔑 成功生成 GCS 簽名 URL: {gcs_signed_url}")
+            
+        except Exception as e:
+            logging.error(f"[upload] ❌ GCS 上傳失敗：{e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"圖片上傳到 GCS 失敗: {str(e)}")
 
         # AI 分析（可選）
         ai_detected_data = None
@@ -333,15 +355,13 @@ async def upload_image(
                     "ai_size": ai_detected_data.get("size"),
                  })
             
-            # 🎯 修正點 2-B: 決定 DB 儲存值 (gs:// 優先，否則為本地路徑)
-            cover_url_db_final = gcs_uri if gcs_uri else local_public_url
-            
-            # 🎯 修正點 2-C: 決定 API 返回值 (前端使用的 URL)
-            cover_url_api_final = gcs_signed_url if gcs_signed_url else local_public_url
+            # DB 儲存 GCS URI，API 返回簽名 URL
+            cover_url_db_final = gcs_uri
+            cover_url_api_final = gcs_signed_url
 
-            # 🌟 最終檢查點：我們告訴 ORM 要寫入什麼
-            logging.critical(f"[UPLOAD-CRITICAL] 準備寫入 DB 的 cover_image_url 值: {cover_url_db_final}")
-            logging.critical(f"[UPLOAD-CRITICAL] 準備返回給前端的 cover_url 值: {cover_url_api_final}")
+            # 記錄上傳資訊
+            logging.info(f"[UPLOAD] DB 儲存的 cover_image_url: {cover_url_db_final}")
+            logging.info(f"[UPLOAD] 返回給前端的 cover_url: {cover_url_api_final}")
 
             try:
                 model_cols = set(c.name for c in WardrobeItem.__table__.columns)
@@ -391,17 +411,16 @@ async def upload_image(
 
             result = {
                 "original_filename": file_obj.filename,
-                "stored_path": cover_rel_path,
+                "stored_path": gcs_blob_path,
                 "db_id": item.id,
                 "category": local_category,
                 "name": name,
                 "brand": brand_val,
                 "color": color_val,
                 "style": style_val,
-                # 🎯 修正點 2-E: API 返回使用 cover_url_api_final
                 "cover_url": cover_url_api_final, 
                 "bg_removed": is_bg_removed,
-                "gcs_url": gcs_uri,  # gs:// 格式供除錯用
+                "gcs_uri": gcs_uri,
             }
             if ai_detected_data:
                 result["ai_analysis"] = ai_detected_data
@@ -410,10 +429,6 @@ async def upload_image(
 
         except Exception as e:
             logging.error(f"[upload] DB 寫入失敗：{e}", exc_info=True)
-            try:
-                save_path.unlink(missing_ok=True)
-            except Exception:
-                pass
             db.rollback()
             raise HTTPException(status_code=500, detail=f"資料儲存失敗: {e}")
 

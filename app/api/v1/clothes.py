@@ -187,11 +187,28 @@ async def upload_clothes(
             safe_cat = category.strip().replace("/", "_")
             gcs_path = f"clothes/{safe_cat}/{safe_stem}{final_file_path.suffix}"
             
+            # 讀取檔案內容為 bytes
+            with open(final_file_path, "rb") as f:
+                file_bytes = f.read()
+            
+            # 決定 MIME type
+            ext = final_file_path.suffix.lower()
+            if ext == ".png":
+                mime_type = "image/png"
+            elif ext in [".jpg", ".jpeg"]:
+                mime_type = "image/jpeg"
+            elif ext == ".webp":
+                mime_type = "image/webp"
+            else:
+                mime_type = "image/jpeg"
+            
             logger.info(f"上傳至 GCS: {gcs_path}")
             gcs_url = upload_file_to_gcs(
-                str(final_file_path),
-                GCS_BUCKET_NAME,
-                gcs_path
+                file_bytes=file_bytes,
+                destination_blob_name=gcs_path,
+                mime_type=mime_type,
+                bucket_name=GCS_BUCKET_NAME,
+                public=False
             )
             cover_url = gcs_url  # 使用 GCS URL
             logger.info(f"GCS URL: {cover_url}")
@@ -243,6 +260,7 @@ async def upload_clothes(
                 "img": resolved_url,  # ✅ 統一處理後的 URL
                 "daysInactive": None,
                 "owner_display_name": item.user.display_name if item.user else "",
+                "last_worn_at": item.last_worn_at.isoformat() if item.last_worn_at else None,
             }
         }
         
@@ -266,6 +284,7 @@ async def upload_clothes(
 @router.get("/")
 def list_clothes(
     limit: int = 50,
+    scope: Optional[str] = None,
     db: Session = Depends(get_db),
     user: Optional[User] = Depends(_get_optional_current_user)
 ):
@@ -277,7 +296,13 @@ def list_clothes(
                 return []
         
         q = db.query(WardrobeItem)
-        if user:
+        # ✅ 判斷是否為管理者且請求所有衣物
+        is_admin = user and getattr(user, 'role', None) == 'admin'
+        if scope == "all" and is_admin:
+            # 管理者請求所有衣物,不過濾 user_id
+            logger.info(f"管理者 {user.id} 請求所有衣物")
+        elif user:
+            # 普通使用者只能看到自己的衣物
             q = q.filter(WardrobeItem.user_id == user.id)
         
         q = q.order_by(WardrobeItem.created_at.desc()).limit(limit)
@@ -308,6 +333,9 @@ def list_clothes(
                 "img": img_url,  # ✅ 統一處理後的 URL
                 "daysInactive": days,
                 "owner_display_name": item.user.display_name if item.user else "",
+                "user_id": item.user_id,
+                "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+                "created_at": item.created_at.isoformat() if item.created_at else None,
             })
         
         return result
@@ -354,6 +382,8 @@ def get_clothes_item(
             "owner_display_name": item.user.display_name if item.user else "",
             "tags": item.tags or [],
             "attributes": item.attributes or {},
+            "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+            "created_at": item.created_at.isoformat() if item.created_at else None,
         }
         
     except HTTPException:
@@ -369,7 +399,7 @@ def delete_clothes_item(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """刪除衣物"""
+    """刪除衣物（管理員可刪除所有使用者的衣物）"""
     try:
         try:
             parsed_id = int(item_id)
@@ -380,8 +410,15 @@ def delete_clothes_item(
         if not item:
             raise HTTPException(status_code=404, detail="找不到該衣物")
         
-        if item.user_id != current_user.id:
+        # 檢查權限：管理員可以刪除所有衣物，一般使用者只能刪除自己的
+        is_admin = getattr(current_user, 'role', None) == 'admin'
+        
+        if not is_admin and item.user_id != current_user.id:
             raise HTTPException(status_code=403, detail="沒有權限刪除此衣物")
+        
+        # 管理員刪除時記錄日誌
+        if is_admin and item.user_id != current_user.id:
+            logger.info(f"管理員 {current_user.id} 刪除了使用者 {item.user_id} 的衣物 {item_id}")
         
         # 刪除圖片檔案（僅本地檔案）
         img_path = item.cover_image_url
