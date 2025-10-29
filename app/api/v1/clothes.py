@@ -54,6 +54,30 @@ print(f"DEBUG: USE_GCS 實際值: {USE_GCS}")
 print(f"DEBUG: GCS_BUCKET_NAME 實際值: {GCS_BUCKET_NAME}")
 # ========== 臨時 DEBUG 碼 END ==========
 
+# 前端英文值到資料庫中文值的映射
+CATEGORY_MAP = {
+    "tops": "上衣",
+    "skirts": "裙子",
+    "pants": "褲子",
+    "dresses": "洋裝",
+    "outerwear": "外套",
+    "shoes": "鞋子",
+    "hats": "帽子",
+    "bags": "包包",
+    "accessories": "配件",
+    "bottoms": "褲子",  # bottoms 也映射到褲子
+    # 已經是中文的直接通過
+    "上衣": "上衣",
+    "裙子": "裙子",
+    "褲子": "褲子",
+    "洋裝": "洋裝",
+    "外套": "外套",
+    "鞋子": "鞋子",
+    "帽子": "帽子",
+    "包包": "包包",
+    "配件": "配件",
+}
+
 def _sanitize_name(raw: str) -> str:
     """清理檔案名稱"""
     raw = (raw or "").strip()
@@ -112,6 +136,10 @@ async def upload_clothes(
         
         ai_detect_enabled = ai_detect == "1"
         remove_bg_enabled = remove_bg == "1"
+        
+        # 轉換 category 從英文到中文
+        category = CATEGORY_MAP.get(category.strip(), category.strip()) or "上衣"
+        logger.info(f"收到 category: {category}")
         
         # 2. 儲存原始檔案
         safe_stem = _sanitize_name(name) if name.strip() else _sanitize_name(Path(file.filename).stem)

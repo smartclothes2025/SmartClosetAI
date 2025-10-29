@@ -7,20 +7,15 @@ from enum import Enum
 from pathlib import Path
 
 class CategoryEnum(str, Enum):
-    TOP = "tops"
-    SKIRT = "skirts"
-    PANTS = "pants"
-    DRESS = "dresses"
-    OUTER = "outerwear"
-    SHOES = "shoes"
-    HAT = "hats"
-    BAG = "bags"
-    ACCESSORY = "accessories"
-    BOTTOMS = "bottoms"
-    SPECIAL = "special"
-    JEWELRY = "jewelry"
-    PANTSUITS = "pantsuits"
-    SOCKS = "socks"
+    TOP = "上衣"
+    SKIRT = "裙子"
+    PANTS = "褲子"
+    DRESS = "洋裝"
+    OUTER = "外套"
+    SHOES = "鞋子"
+    HAT = "帽子"
+    BAG = "包包"
+    ACCESSORY = "配件"
 
 class WardrobeItem(Base):
     __tablename__ = 'wardrobe_items' # 建議使用一個新的、更明確的表名
@@ -41,6 +36,7 @@ class WardrobeItem(Base):
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))
+    last_worn_at = Column(DateTime(timezone=True), nullable=True)
 
     user = relationship("User", back_populates="wardrobe")
     # 與 Outfit 的多對多關係
@@ -76,7 +72,8 @@ class WardrobeItem(Base):
             color=resolved_color,
             style=resolved_style,
             cover_image_url=str(p.as_posix()),
-            attributes=attrs
+            attributes=attrs,
+            last_worn_at=datetime.now(timezone.utc)
         )
         db.add(item)
         db.commit()

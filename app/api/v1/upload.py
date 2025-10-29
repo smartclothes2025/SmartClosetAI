@@ -64,18 +64,29 @@ CATEGORY_FOLDERS = {
     "accessories": "uploads/accessories",
     "special": "uploads/special",
 }
+# 前端英文值到資料庫中文值的映射
 CATEGORY_NORMALIZE = {
-    "tops": "tops",
-    "dresses": "dresses",
-    "pants": "pants",
-    "skirts": "skirts",
-    "outerwear": "outerwear",
-    "shoes": "shoes",
-    "bags": "bags",
-    "hats": "hats",
-    "socks": "socks",
-    "accessories": "accessories",
-    "bottoms": "pants",  # 以褲子作為下身的主分類
+    "tops": "上衣",
+    "dresses": "洋裝",
+    "pants": "褲子",
+    "skirts": "裙子",
+    "outerwear": "外套",
+    "shoes": "鞋子",
+    "bags": "包包",
+    "hats": "帽子",
+    "socks": "襪子",
+    "accessories": "配件",
+    "bottoms": "褲子",  # 以褲子作為下身的主分類
+    # 已經是中文的直接通過
+    "上衣": "上衣",
+    "裙子": "裙子",
+    "褲子": "褲子",
+    "洋裝": "洋裝",
+    "外套": "外套",
+    "鞋子": "鞋子",
+    "帽子": "帽子",
+    "包包": "包包",
+    "配件": "配件",
 }
 for folder in CATEGORY_FOLDERS.values():
     Path(folder).mkdir(parents=True, exist_ok=True)
@@ -154,10 +165,24 @@ async def upload_image(
     tags_list = [str(t) for t in tags_list if t is not None]
 
     # 類別正規化
+    # 先取得英文 category 用於檔案儲存路徑
+    category_input = category.strip() if isinstance(category, str) else ""
     allowed_categories = set(CATEGORY_FOLDERS.keys())
-    category_val = CATEGORY_NORMALIZE.get(category.strip(), category.strip()) if isinstance(category, str) else ""
-    if category_val not in allowed_categories:
-        category_val = "tops"
+    
+    # 如果輸入是中文，先反向查找對應的英文 key
+    category_en = category_input
+    if category_input not in allowed_categories:
+        # 嘗試從 CATEGORY_NORMALIZE 的值反向查找 key
+        for k, v in CATEGORY_NORMALIZE.items():
+            if v == category_input and k in allowed_categories:
+                category_en = k
+                break
+    
+    if category_en not in allowed_categories:
+        category_en = "tops"
+    
+    # 轉換為中文用於資料庫
+    category_db = CATEGORY_NORMALIZE.get(category_en, "上衣")
 
     results = []
     
@@ -206,8 +231,8 @@ async def upload_image(
                 final_ext = orig_ext
                 is_bg_removed = False
 
-        # 寫檔
-        dest_folder = _get_dest_folder(category_val)
+        # 寫檔（使用英文 category 決定路徑）
+        dest_folder = _get_dest_folder(category_en)
         dest_folder.mkdir(parents=True, exist_ok=True)
 
         candidate = f"{safe_stem}{final_ext}"
@@ -269,7 +294,7 @@ async def upload_image(
         ai_detected_data = None
         color_val = color or ""
         style_val = style or ""
-        local_category = category_val  # 可能由 AI 建議覆蓋
+        local_category = category_db  # 使用中文 category（可能由 AI 建議覆蓋）
 
         if str(ai_detect).lower() in ("1", "true", "yes") and HAS_GEMINI:
             try:
@@ -354,6 +379,10 @@ async def upload_image(
                 item_kwargs["brand"] = brand_val
             if "style" in model_cols and style_val:
                 item_kwargs["style"] = style_val
+            
+            # 設定 last_worn_at 為上傳時間
+            if "last_worn_at" in model_cols:
+                item_kwargs["last_worn_at"] = datetime.utcnow()
 
             item = WardrobeItem(**item_kwargs)
             db.add(item)

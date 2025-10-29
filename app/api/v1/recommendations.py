@@ -25,13 +25,30 @@ def current_user_from_header(
     """從 Authorization Bearer 取得當前用戶"""
     if not credentials or not credentials.credentials:
         raise HTTPException(status_code=401, detail="未提供 Authorization Bearer")
+    
     token = credentials.credentials
+    
+    # 解析簡單的 user-{uuid}-token 格式
+    prefix = "user-"
+    suffix = "-token"
+    if not (isinstance(token, str) and token.startswith(prefix) and token.endswith(suffix)):
+        raise HTTPException(status_code=401, detail="Token 格式錯誤")
+    
+    # 提取 UUID
+    user_id = token[len(prefix):-len(suffix)]
+    
     try:
-        return get_current_user(token=token, db=db)
-    except TypeError:
-        return get_current_user(token)
+        import uuid as _uuid
+        _uuid.UUID(user_id)  # 驗證格式
     except Exception:
-        raise HTTPException(status_code=401, detail="登入已過期或無效")
+        raise HTTPException(status_code=401, detail="Token 格式錯誤")
+    
+    # 查詢使用者
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="使用者不存在")
+    
+    return user
 
 def resolve_image_url(uri: str) -> str:
     """轉換圖片 URI 為可訪問的 URL"""
@@ -102,21 +119,74 @@ def get_clothing_suggestions(item: WardrobeItem, all_items: List[WardrobeItem], 
     
     return suggestions
 
+@router.get("/daily")
+def get_daily_recommendations(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(current_user_from_header),
+):
+    """取得今日推薦（基於超過90天未穿的衣物）"""
+    try:
+        from sqlalchemy import text
+        import json
+        
+        # 查詢該使用者的今日推薦
+        result = db.execute(text("""
+            SELECT id, kind, payload, expires_at, created_at
+            FROM recommendations
+            WHERE user_id = :user_id
+            AND kind = 'daily_inactive'
+            AND (expires_at IS NULL OR expires_at > NOW())
+            ORDER BY created_at DESC
+        """), {"user_id": str(current_user.id)})
+        
+        recommendations = []
+        for row in result:
+            payload = row.payload if isinstance(row.payload, dict) else json.loads(row.payload)
+            
+            # 解析圖片 URL
+            image_url = payload.get("imageUrl", "")
+            if image_url:
+                image_url = resolve_image_url(image_url)
+            
+            recommendations.append({
+                "id": str(row.id),
+                "item": {
+                    "id": payload.get("item_id"),
+                    "name": payload.get("name"),
+                    "category": payload.get("category"),
+                    "color": payload.get("color"),
+                    "imageUrl": image_url,
+                    "daysInactive": payload.get("daysInactive"),
+                },
+                "reason": payload.get("reason"),
+                "suggestions": []  # 可以加入搭配建議
+            })
+        
+        logger.info(f"[daily] 為使用者 {current_user.id} 找到 {len(recommendations)} 筆推薦")
+        
+        return recommendations
+        
+    except Exception as e:
+        logger.exception("[daily] 取得今日推薦失敗")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/inactive")
 def get_inactive_recommendations(
     days: int = Query(90, ge=1, le=365, description="未穿天數門檻"),
     db: Session = Depends(get_db),
-    # current_user: User = Depends(current_user_from_header),  # 暫時註解掉
+    current_user: User = Depends(current_user_from_header),
 ):
     try:
         # 計算截止日期（使用當前時間減去指定天數）
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
         
-        logger.info("[inactive] days=%s", days)
+        logger.info("[inactive] days=%s, user_id=%s", days, current_user.id)
 
-        # 查詢超過指定天數未穿的衣物
+        # 查詢該使用者超過指定天數未穿的衣物
+        # 使用 last_worn_at（優先）或 created_at
         inactive_items = (
             db.query(WardrobeItem)
+            .filter(WardrobeItem.user_id == current_user.id)
             .filter(
                 or_(
                     and_(
@@ -175,7 +245,7 @@ def get_inactive_recommendations(
             })
 
             logger.info(
-                "[inactive] item id=%s name=%s days=%s user_id=%s last_worn=%s created_at=%s",
+                "[inactive] item id=%s name=%s days=%s user_id=%s last_worn_at=%s created_at=%s",
                 getattr(item, "id", None),
                 getattr(item, "name", None),
                 days_inactive,
