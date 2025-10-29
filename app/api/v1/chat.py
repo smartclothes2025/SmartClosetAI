@@ -44,9 +44,17 @@ def get_outfit_recommendation(payload: Dict[str, str] = Body(...)) -> Dict[str, 
         raise HTTPException(status_code=400, detail="缺少 user_input")
         
     try:
-        # 呼叫您修正後的函式
-        result = advisor.process_user_input(user_input, user_image_data)
-        logger.info(f"FashionAdvisor 返回結果: {result}")
+        # 判斷是否為穿搭請求
+        is_outfit_req = advisor.is_outfit_request(user_input)
+        
+        if is_outfit_req:
+            # 呼叫原有的處理函式來生成圖片或回退到文字
+            result = advisor.process_user_input(user_input, user_image_data)
+        else:
+            # 如果不是穿搭請求，直接呼叫聊天函式
+            result = advisor.chat_with_gemini(user_input)
+            
+        logger.info(f"Advisor 返回結果: {result}")
         
         # --- 這是修正後的檢查邏輯 ---
 

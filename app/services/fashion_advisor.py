@@ -12,7 +12,7 @@ load_dotenv() # 確保在 main.py 或 app.py 中呼叫過一次
 
 from google.cloud import storage
 import vertexai
-from vertexai.generative_models import GenerativeModel, Part
+from vertexai.generative_models import GenerativeModel, Part, GenerationResponse
 from vertexai.preview.vision_models import ImageGenerationModel
 
 class ClothingItem: # 將 WardrobeItem 改名為 ClothingItem 以保持一致
@@ -93,7 +93,7 @@ class FashionAdvisor:
             vertexai.init(project=self.gcp_project_id, location=self.gcp_location)
             
             # 使用 Vertex AI 的模型名稱 (例如 "gemini-1.0-pro" 或 "gemini-1.5-flash-001")
-            self.text_model = GenerativeModel("gemini-2.5-flash") 
+            self.text_model = GenerativeModel("gemini-1.5-flash-001") 
             # 使用 Imagen 模型進行圖片生成
             self.image_model = ImageGenerationModel.from_pretrained("imagegeneration@006")
             logger.info(f"Vertex AI (GCP) API 初始化成功")
@@ -226,6 +226,39 @@ class FashionAdvisor:
             logger.error(f"呼叫 Imagen API 失敗: {e}", exc_info=True)
             return None
 
+    def chat_with_gemini(self, user_input: str) -> Dict[str, Any]:
+        """
+        使用 Gemini 模型進行一般聊天。
+        """
+        logger.info("進行一般聊天模式 (Gemini)。")
+        
+        if not self.text_model:
+            logger.error("Gemini 文本模型未初始化，無法執行聊天功能。")
+            return {"type": "text", "text": "錯誤：聊天服務未正確設定。"}
+
+        try:
+            prompt = f"你是一個智慧穿搭助手，請根據使用者的問題提供專業建議。使用者說：'{user_input}'"
+            
+            response: GenerationResponse = self.text_model.generate_content(prompt)
+            
+            # 檢查是否有候選回應以及內容
+            if not response.candidates or not response.candidates[0].content.parts:
+                logger.warning("Gemini 模型回傳空的候選內容。")
+                return {"type": "text", "text": "抱歉，我暫時無法回答這個問題。"}
+
+            gemini_text = response.candidates[0].content.parts[0].text.strip()
+            
+            if not gemini_text:
+                logger.warning("Gemini 聊天模型回傳空字串。")
+                return {"type": "text", "text": "抱歉，我暫時無法回答這個問題。"}
+            
+            logger.info(f"Gemini 聊天回應: {gemini_text[:100]}...")
+            return {"type": "text", "text": gemini_text}
+        except Exception as e:
+            logger.error(f"與 Gemini 聊天時發生錯誤: {str(e)}", exc_info=True)
+            return {"type": "text", "text": f"服務器內部錯誤：{str(e)}"}
+
+
     def process_user_input(self, user_input: str, user_image_data: Optional[str] = None) -> Dict[str, Any]:
         """
         處理使用者輸入，如果偵測到穿搭請求，則嘗試生成圖片；否則進行一般聊天。
@@ -250,26 +283,11 @@ class FashionAdvisor:
                     }
                 else:
                     logger.error("影像生成失敗，轉為一般聊天。")
+                    # 影像生成失敗，直接呼叫 Gemini 聊天
+                    return self.chat_with_gemini(user_input)
             
-            # 如果非穿搭需求，或衣櫃為空，或影像生成失敗，進行一般聊天
-            logger.info("進行一般聊天模式。")
-            
-            if not self.text_model:
-                logger.error("Gemini API 文本模型未初始化，無法執行聊天功能。")
-                return {"type": "text", "text": "錯誤：Gemini API 未設定，請檢查 GEMINI_API_KEY。"}
-
-            prompt = f"你是一個智慧穿搭助手，使用者說：'{user_input}'。請自然、專業地回答，提供穿搭方面的建議。"
-            
-            # 使用 self.text_model (來自 Gemini API)
-            response = self.text_model.generate_content(prompt) 
-            gemini_text = response.text.strip() if response.text else ""
-            
-            if not gemini_text:
-                logger.warning("Gemini 聊天模型回傳空字串。")
-                return {"type": "text", "text": "抱歉，我暫時無法回答這個問題。"}
-            
-            logger.info(f"Gemini 聊天回應: {gemini_text[:100]}...")
-            return {"type": "text", "text": gemini_text}
+            # 如果非穿搭需求或衣櫃為空，進行一般聊天
+            return self.chat_with_gemini(user_input)
 
         except Exception as e:
             logger.error(f"FashionAdvisor 處理錯誤: {str(e)}", exc_info=True)
