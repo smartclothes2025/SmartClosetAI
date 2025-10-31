@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>診斷 /auth/me 和通知問題</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 24px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 24px;
+            font-size: 14px;
+        }
+        
+        h2 {
+            color: #667eea;
+            font-size: 18px;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .input-group {
+            margin-bottom: 16px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 6px;
+            color: #555;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        
+        input, select {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        
+        input:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #5568d3;
+            transform: translateY(-1px);
+        }
+        
+        .btn-secondary {
+            background: #e0e0e0;
+            color: #333;
+            margin-left: 8px;
+        }
+        
+        .btn-secondary:hover {
+            background: #d0d0d0;
+        }
+        
+        pre {
+            background: #f5f5f5;
+            padding: 16px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 12px;
+            line-height: 1.6;
+            margin: 12px 0;
+        }
+        
+        .status {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            font-size: 14px;
+        }
+        
+        .status-success {
+            background: #d4edda;
+            color: #155724;
+            border-left: 4px solid #28a745;
+        }
+        
+        .status-error {
+            background: #f8d7da;
+            color: #721c24;
+            border-left: 4px solid #dc3545;
+        }
+        
+        .status-warning {
+            background: #fff3cd;
+            color: #856404;
+            border-left: 4px solid #ffc107;
+        }
+        
+        .status-info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border-left: 4px solid #17a2b8;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+        
+        .badge-uuid {
+            background: #6f42c1;
+            color: white;
+        }
+        
+        .badge-int {
+            background: #007bff;
+            color: white;
+        }
+        
+        .badge-string {
+            background: #28a745;
+            color: white;
+        }
+        
+        .suggestion-box {
+            background: #e7f3ff;
+            border-left: 4px solid #667eea;
+            padding: 16px;
+            border-radius: 4px;
+            margin-top: 12px;
+        }
+        
+        .suggestion-box strong {
+            color: #667eea;
+            display: block;
+            margin-bottom: 8px;
+        }
+        
+        .suggestion-box code {
+            background: rgba(0,0,0,0.05);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+        
+        #results {
+            display: none;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h1>🔍 /auth/me 診斷工具</h1>
+            <p class="subtitle">診斷通知系統的使用者 ID 問題</p>
+            
+            <div class="input-group">
+                <label for="apiBase">API 基礎 URL</label>
+                <input type="text" id="apiBase" value="http://localhost:8000" placeholder="http://localhost:8000">
+            </div>
+            
+            <div class="input-group">
+                <label for="token">Authorization Token</label>
+                <input type="text" id="token" placeholder="從 localStorage 取得或手動輸入">
+                <small style="color: #999; font-size: 12px; display: block; margin-top: 4px;">
+                    如果留空，會嘗試從 localStorage.getItem('token') 取得
+                </small>
+            </div>
+            
+            <div>
+                <button class="btn-primary" onclick="diagnose()">🚀 開始診斷</button>
+                <button class="btn-secondary" onclick="loadFromLocalStorage()">📥 從 localStorage 載入</button>
+            </div>
+        </div>
+        
+        <div id="results">
+            <div class="card">
+                <h2>📊 診斷結果</h2>
+                <div id="resultContent"></div>
+            </div>
+            
+            <div class="card">
+                <h2>💡 建議修正</h2>
+                <div id="suggestions"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function loadFromLocalStorage() {
+            const token = localStorage.getItem('token');
+            if (token) {
+                document.getElementById('token').value = token;
+                showMessage('✅ 已從 localStorage 載入 token', 'success');
+            } else {
+                showMessage('⚠️ localStorage 中沒有 token', 'warning');
+            }
+        }
+
+        async function diagnose() {
+            const apiBase = document.getElementById('apiBase').value.trim();
+            let token = document.getElementById('token').value.trim();
+            
+            if (!token) {
+                token = localStorage.getItem('token');
+                if (!token) {
+                    showMessage('❌ 請提供 token 或確保 localStorage 中有 token', 'error');
+                    return;
+                }
+            }
+            
+            document.getElementById('results').style.display = 'block';
+            document.getElementById('resultContent').innerHTML = '<div class="loading">⏳ 正在檢查...</div>';
+            document.getElementById('suggestions').innerHTML = '';
+            
+            const results = [];
+            const suggestions = [];
+            
+            // 1. 檢查 /auth/me
+            try {
+                results.push('<h3>1️⃣ 檢查 GET /api/v1/auth/me</h3>');
+                
+                const response = await fetch(`${apiBase}/api/v1/auth/me`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+                
+                results.push(`<div class="status status-info">狀態碼: ${response.status} ${response.statusText}</div>`);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    results.push('<div class="status status-success">✅ /auth/me 回應成功</div>');
+                    results.push('<strong>回應內容：</strong>');
+                    results.push(`<pre>${JSON.stringify(data, null, 2)}</pre>`);
+                    
+                    // 分析 user_id
+                    const possibleIds = {
+                        'id': data.id,
+                        'user_id': data.user_id,
+                        'userId': data.userId,
+                        'uid': data.uid,
+                        'uuid': data.uuid,
+                        'user.id': data.user?.id
+                    };
+                    
+                    let foundId = null;
+                    let foundKey = null;
+                    
+                    for (const [key, value] of Object.entries(possibleIds)) {
+                        if (value !== undefined && value !== null) {
+                            foundId = value;
+                            foundKey = key;
+                            break;
+                        }
+                    }
+                    
+                    if (foundId) {
+                        const idType = detectIdType(foundId);
+                        results.push(`<div class="status status-success">
+                            ✅ 找到使用者 ID: <code>${foundId}</code>
+                            <span class="badge badge-${idType}">${idType.toUpperCase()}</span>
+                        </div>`);
+                        results.push(`<div class="status status-info">📍 ID 欄位名稱: <code>${foundKey}</code></div>`);
+                        
+                        // 生成建議
+                        if (idType === 'uuid') {
+                            suggestions.push(`
+                                <div class="suggestion-box">
+                                    <strong>🔧 UUID 類型修正：</strong>
+                                    在前端 <code>.env</code> 檔案中設定：
+                                    <pre>VITE_NOTIF_USER_ID_TYPE=uuid</pre>
+                                    然後重啟前端開發伺服器：
+                                    <pre>npm run dev</pre>
+                                </div>
+                            `);
+                        } else if (idType === 'int') {
+                            suggestions.push(`
+                                <div class="suggestion-box">
+                                    <strong>✅ 整數類型正確</strong>
+                                    在前端 <code>.env</code> 檔案中設定（或保持預設）：
+                                    <pre>VITE_NOTIF_USER_ID_TYPE=int</pre>
+                                </div>
+                            `);
+                        }
+                        
+                        if (foundKey !== 'id') {
+                            suggestions.push(`
+                                <div class="suggestion-box">
+                                    <strong>⚠️ 欄位名稱不是 'id'</strong>
+                                    前端 NotificationContext.jsx 需要支援 <code>${foundKey}</code> 欄位。<br>
+                                    請在 <code>getUserInfo()</code> 函數中加入：
+                                    <pre>const userId = user.${foundKey} || user.id || user.user_id;</pre>
+                                </div>
+                            `);
+                        }
+                        
+                        // 測試建立通知
+                        await testCreateNotification(apiBase, token, foundId, idType, results, suggestions);
+                        
+                    } else {
+                        results.push('<div class="status status-error">❌ 找不到使用者 ID 欄位</div>');
+                        suggestions.push(`
+                            <div class="suggestion-box">
+                                <strong>❌ 缺少使用者 ID</strong>
+                                /auth/me 的回應中沒有以下任何欄位：
+                                <ul style="margin: 8px 0; padding-left: 20px;">
+                                    <li>id</li>
+                                    <li>user_id</li>
+                                    <li>userId</li>
+                                    <li>uid</li>
+                                    <li>uuid</li>
+                                </ul>
+                                請檢查後端 /auth/me 端點是否正確回傳使用者 ID。
+                            </div>
+                        `);
+                    }
+                } else {
+                    const errorText = await response.text();
+                    results.push(`<div class="status status-error">❌ /auth/me 失敗</div>`);
+                    results.push(`<pre>${errorText}</pre>`);
+                    
+                    if (response.status === 401) {
+                        suggestions.push(`
+                            <div class="suggestion-box">
+                                <strong>🔐 認證失敗 (401)</strong>
+                                可能原因：
+                                <ul style="margin: 8px 0; padding-left: 20px;">
+                                    <li>Token 無效或過期</li>
+                                    <li>Token 格式不正確</li>
+                                    <li>使用者已登出</li>
+                                </ul>
+                                請重新登入取得新的 token。
+                            </div>
+                        `);
+                    } else if (response.status === 404) {
+                        suggestions.push(`
+                            <div class="suggestion-box">
+                                <strong>❌ 端點不存在 (404)</strong>
+                                請確認後端有 <code>/api/v1/auth/me</code> 端點。
+                            </div>
+                        `);
+                    }
+                }
+            } catch (error) {
+                results.push(`<div class="status status-error">❌ 請求失敗: ${error.message}</div>`);
+                suggestions.push(`
+                    <div class="suggestion-box">
+                        <strong>🌐 網路錯誤</strong>
+                        請檢查：
+                        <ul style="margin: 8px 0; padding-left: 20px;">
+                            <li>後端伺服器是否正在運行（${apiBase}）</li>
+                            <li>CORS 設定是否正確</li>
+                            <li>網路連線是否正常</li>
+                        </ul>
+                    </div>
+                `);
+            }
+            
+            document.getElementById('resultContent').innerHTML = results.join('');
+            document.getElementById('suggestions').innerHTML = suggestions.join('');
+        }
+        
+        async function testCreateNotification(apiBase, token, userId, idType, results, suggestions) {
+            results.push('<h3 style="margin-top: 24px;">2️⃣ 測試建立通知</h3>');
+            
+            try {
+                const response = await fetch(`${apiBase}/api/v1/notifications/`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        user_id: String(userId),
+                        type: 'test',
+                        message: '診斷工具測試通知',
+                        payload: {
+                            test: true,
+                            timestamp: new Date().toISOString()
+                        }
+                    })
+                });
+                
+                results.push(`<div class="status status-info">狀態碼: ${response.status} ${response.statusText}</div>`);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    results.push('<div class="status status-success">✅ 通知建立成功！</div>');
+                    results.push(`<pre>${JSON.stringify(data, null, 2)}</pre>`);
+                    
+                    suggestions.push(`
+                        <div class="suggestion-box">
+                            <strong>🎉 通知系統正常運作！</strong>
+                            您的設定正確，通知已成功建立。可以在資料庫中看到這筆測試通知。
+                        </div>
+                    `);
+                } else {
+                    const errorText = await response.text();
+                    results.push(`<div class="status status-error">❌ 通知建立失敗</div>`);
+                    results.push(`<pre>${errorText}</pre>`);
+                    
+                    if (response.status === 404) {
+                        suggestions.push(`
+                            <div class="suggestion-box">
+                                <strong>❌ 通知 API 不存在 (404)</strong>
+                                請檢查：
+                                <ul style="margin: 8px 0; padding-left: 20px;">
+                                    <li>後端是否有 <code>/api/v1/notifications/</code> 端點</li>
+                                    <li>路由是否在 <code>app/api/v1/router.py</code> 中註冊</li>
+                                    <li>後端伺服器是否已重啟</li>
+                                </ul>
+                            </div>
+                        `);
+                    }
+                }
+            } catch (error) {
+                results.push(`<div class="status status-error">❌ 請求失敗: ${error.message}</div>`);
+            }
+        }
+        
+        function detectIdType(id) {
+            const idStr = String(id);
+            
+            // UUID 格式檢查 (8-4-4-4-12)
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (uuidRegex.test(idStr)) {
+                return 'uuid';
+            }
+            
+            // 純數字檢查
+            if (/^\d+$/.test(idStr)) {
+                return 'int';
+            }
+            
+            return 'string';
+        }
+        
+        function showMessage(message, type) {
+            const className = `status-${type}`;
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `status ${className}`;
+            msgDiv.textContent = message;
+            msgDiv.style.position = 'fixed';
+            msgDiv.style.top = '20px';
+            msgDiv.style.right = '20px';
+            msgDiv.style.zIndex = '9999';
+            msgDiv.style.minWidth = '300px';
+            document.body.appendChild(msgDiv);
+            
+            setTimeout(() => {
+                msgDiv.remove();
+            }, 3000);
+        }
+        
+        // 頁面載入時自動從 localStorage 載入 token
+        window.addEventListener('load', () => {
+            const token = localStorage.getItem('token');
+            if (token) {
+                document.getElementById('token').value = token;
+            }
+        });
+    </script>
+</body>
+</html>

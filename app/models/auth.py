@@ -26,3 +26,6 @@ class User(Base):
     
     # 用户的穿搭记录
     outfits = relationship("Outfit", back_populates="user")
+    
+    # 用户的通知
+    notifications = relationship("Notification", back_populates="user")

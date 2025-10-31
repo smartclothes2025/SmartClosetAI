@@ -10,6 +10,7 @@ from .users import router as users_router
 from .posts import router as posts_router
 from .outfits import router as outfits_router
 from .recommendations import router as recommendations_router
+from .notifications import router as notifications_router
 
 api_router = APIRouter()
 
@@ -28,3 +29,4 @@ api_router.include_router(users_router, tags=["帳號"])
 api_router.include_router(posts_router, prefix="/posts", tags=["貼文"])
 api_router.include_router(outfits_router, tags=["穿搭"])
 api_router.include_router(recommendations_router, tags=["推薦"])
+api_router.include_router(notifications_router, prefix="/notifications", tags=["通知"])

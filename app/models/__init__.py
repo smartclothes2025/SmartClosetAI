@@ -4,3 +4,4 @@ from app.core.db import Base
 from .auth import User
 from app.models.wardrobe import WardrobeItem
 from .outfit import Outfit
+from .notification import Notification

@@ -271,7 +271,6 @@ async def upload_image(
                 counter += 1
                 if counter > 100:  # 安全上限
                     logging.warning(f"[upload] 檔名重複次數過多，使用時間戳: {final_stem}")
-                    from datetime import datetime
                     timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
                     unique_filename = f"{stem_only}_{timestamp}{final_ext}"
                     gcs_blob_path = f"{user_folder}/{unique_filename}"

@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartClosetAI - 測試使用者設定工具</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        
+        .section {
+            margin-bottom: 30px;
+        }
+        
+        .section-title {
+            color: #667eea;
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #555;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        
+        input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .button {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 10px;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+        
+        .btn-secondary {
+            background: #f5f5f5;
+            color: #333;
+        }
+        
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+        
+        .btn-danger {
+            background: #ff4757;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #ee5a6f;
+        }
+        
+        .status {
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+        
+        .status-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .status-warning {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        
+        .status-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .info-box {
+            background: #e7f3ff;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        
+        .info-box strong {
+            color: #667eea;
+        }
+        
+        pre {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        
+        .badge-success {
+            background: #28a745;
+            color: white;
+        }
+        
+        .badge-danger {
+            background: #dc3545;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔧 測試使用者設定工具</h1>
+        <p class="subtitle">用於設定 localStorage 中的測試使用者資料</p>
+        
+        <!-- 狀態顯示 -->
+        <div id="status"></div>
+        
+        <!-- 當前狀態 -->
+        <div class="section">
+            <div class="section-title">
+                <span>📊</span>
+                <span>當前狀態</span>
+            </div>
+            <div id="currentStatus"></div>
+        </div>
+        
+        <!-- 設定表單 -->
+        <div class="section">
+            <div class="section-title">
+                <span>👤</span>
+                <span>設定測試使用者</span>
+            </div>
+            
+            <div class="form-group">
+                <label for="userId">使用者 ID</label>
+                <input type="number" id="userId" value="1" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="username">使用者名稱</label>
+                <input type="text" id="username" value="testuser" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="email">Email</label>
+                <input type="email" id="email" value="test@example.com" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="displayName">顯示名稱</label>
+                <input type="text" id="displayName" value="測試使用者" required>
+            </div>
+            
+            <button class="button btn-primary" onclick="setTestUser()">
+                ✅ 設定測試使用者
+            </button>
+            
+            <button class="button btn-secondary" onclick="checkStatus()">
+                🔍 重新檢查狀態
+            </button>
+            
+            <button class="button btn-danger" onclick="clearData()">
+                🗑️ 清除所有資料
+            </button>
+        </div>
+        
+        <!-- 說明 -->
+        <div class="info-box">
+            <strong>💡 使用說明：</strong><br>
+            1. 填寫測試使用者資料<br>
+            2. 點擊「設定測試使用者」按鈕<br>
+            3. 重新整理您的應用程式頁面<br>
+            4. 現在應該可以正常建立通知了
+        </div>
+    </div>
+
+    <script>
+        // 檢查當前狀態
+        function checkStatus() {
+            const statusDiv = document.getElementById('currentStatus');
+            const user = localStorage.getItem('user');
+            const token = localStorage.getItem('token');
+            
+            let html = '';
+            
+            if (user) {
+                try {
+                    const userData = JSON.parse(user);
+                    html += `<div class="status status-success">
+                        <strong>✅ 使用者資料已存在</strong><br>
+                        <pre>${JSON.stringify(userData, null, 2)}</pre>
+                    </div>`;
+                    
+                    if (userData.id) {
+                        html += `<div class="status status-success">
+                            <strong>✅ 使用者 ID: ${userData.id}</strong>
+                        </div>`;
+                    } else {
+                        html += `<div class="status status-error">
+                            <strong>❌ 警告：user 物件缺少 id 欄位</strong>
+                        </div>`;
+                    }
+                } catch (e) {
+                    html += `<div class="status status-error">
+                        <strong>❌ 使用者資料格式錯誤</strong><br>
+                        ${e.message}
+                    </div>`;
+                }
+            } else {
+                html += `<div class="status status-warning">
+                    <strong>⚠️ 尚未設定使用者資料</strong>
+                </div>`;
+            }
+            
+            if (token) {
+                html += `<div class="status status-success">
+                    <strong>✅ Token 已存在</strong><br>
+                    ${token}
+                </div>`;
+            } else {
+                html += `<div class="status status-warning">
+                    <strong>⚠️ 尚未設定 Token</strong>
+                </div>`;
+            }
+            
+            statusDiv.innerHTML = html;
+        }
+        
+        // 設定測試使用者
+        function setTestUser() {
+            const userId = document.getElementById('userId').value;
+            const username = document.getElementById('username').value;
+            const email = document.getElementById('email').value;
+            const displayName = document.getElementById('displayName').value;
+            
+            if (!userId || !username || !email) {
+                showMessage('請填寫所有必填欄位', 'error');
+                return;
+            }
+            
+            const userData = {
+                id: parseInt(userId),
+                username: username,
+                email: email,
+                display_name: displayName,
+                role: 'user'
+            };
+            
+            const token = `user-${userId}-token`;
+            
+            try {
+                localStorage.setItem('user', JSON.stringify(userData));
+                localStorage.setItem('token', token);
+                
+                showMessage('✅ 測試使用者設定成功！請重新整理您的應用程式頁面。', 'success');
+                checkStatus();
+            } catch (e) {
+                showMessage('❌ 設定失敗：' + e.message, 'error');
+            }
+        }
+        
+        // 清除資料
+        function clearData() {
+            if (confirm('確定要清除所有 localStorage 資料嗎？')) {
+                localStorage.removeItem('user');
+                localStorage.removeItem('token');
+                showMessage('🗑️ 已清除所有資料', 'success');
+                checkStatus();
+            }
+        }
+        
+        // 顯示訊息
+        function showMessage(message, type) {
+            const statusDiv = document.getElementById('status');
+            const className = type === 'success' ? 'status-success' : 
+                            type === 'error' ? 'status-error' : 'status-warning';
+            
+            statusDiv.innerHTML = `<div class="status ${className}">${message}</div>`;
+            
+            setTimeout(() => {
+                statusDiv.innerHTML = '';
+            }, 5000);
+        }
+        
+        // 頁面載入時檢查狀態
+        window.addEventListener('load', checkStatus);
+    </script>
+</body>
+</html>

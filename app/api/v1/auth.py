@@ -284,6 +284,7 @@ def get_me(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=ERR_USER_NOT_FOUND)
 
     return {
+        "id": user.id,  # 加入 id 欄位供前端通知系統使用
         "email": getattr(user, "email", None),
         "display_name": getattr(user, "display_name", None),
         "interformation": getattr(user, "interformation", None),
