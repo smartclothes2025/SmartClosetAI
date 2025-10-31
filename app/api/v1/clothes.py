@@ -2,12 +2,14 @@
 修正後的衣物路由 - 統一圖片 URL 處理
 放置位置: app/api/v1/clothes.py
 """
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form, status
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form, status, Body, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
+from pydantic import BaseModel
 import shutil
 import re
 import logging
@@ -35,6 +37,29 @@ def resolve_image_url(uri: str) -> str:
             logger.warning(f"無法產生 GCS 簽署 URL: {e}")
             return ""
     return uri
+
+
+# ✅ Pydantic 模型：衣物更新請求
+class ClothesUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    category: Optional[str] = None
+    color: Optional[str] = None
+    tags: Optional[List[str]] = None
+    attributes: Optional[Dict[str, Any]] = None
+    style: Optional[str] = None
+    brand: Optional[str] = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "白色T恤",
+                "category": "上衣",
+                "color": "白色",
+                "style": "休閒",
+                "tags": ["夏季", "基本款"],
+                "attributes": {"brand": "Uniqlo", "size": "M"}
+            }
+        }
 
 
 router = APIRouter()
@@ -391,6 +416,191 @@ def get_clothes_item(
     except Exception as e:
         logger.exception("取得衣物詳情失敗")
         raise HTTPException(status_code=500, detail="讀取衣物失敗")
+
+
+@router.patch("/{item_id}")
+@router.put("/{item_id}")
+async def update_clothes_item(
+    item_id: str,
+    request: Request,
+    body: Optional[Dict[str, Any]] = Body(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """更新衣物資訊（支援部分更新,同時支援 PATCH 和 PUT 方法,接受 JSON 格式）"""
+    try:
+        logger.info(f"收到更新請求 - item_id: {item_id}")
+        logger.info(f"原始 request body: {body}")
+
+        # 支援兩種前端格式：{ "payload": {...} } 或 直接傳 {"name":..., "color":...}
+        data = None
+        if isinstance(body, dict):
+            data = body.get('payload', body)
+
+        # 如果 FastAPI 沒有解析到 body（body is None），嘗試直接從 request 讀取原始 JSON（更健壯）
+        if data is None:
+            try:
+                raw = await request.json()
+                if isinstance(raw, dict):
+                    data = raw.get('payload', raw)
+            except Exception as e:
+                logger.debug(f"無法從 request.json() 取得 body: {e}")
+
+        # 若仍無 data，返回更清楚的錯誤（讓前端更容易除錯）
+        if data is None:
+            raise HTTPException(status_code=422, detail="缺少 request body 或 payload")
+
+        # 使用 Pydantic 驗證（pydantic v2）
+        try:
+            payload = ClothesUpdateRequest.model_validate(data)
+        except Exception as e:
+            logger.warning(f"無法解析更新資料: {e}")
+            raise HTTPException(status_code=422, detail=f"資料驗證失敗: {str(e)}")
+
+        logger.info(f"更新資料 (validated): {payload.model_dump(exclude_none=True)}")
+
+        # 從 payload 提取值
+        name = payload.name
+        category = payload.category
+        color = payload.color
+        tags = payload.tags
+        attributes = payload.attributes
+        style = payload.style
+        brand = payload.brand
+        
+        # 解析 item_id
+        try:
+            parsed_id = int(item_id)
+        except:
+            parsed_id = item_id
+        
+        # 查詢衣物
+        item = db.query(WardrobeItem).filter(WardrobeItem.id == parsed_id).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="找不到該衣物")
+        
+        # 檢查權限：管理員可以編輯所有衣物，一般使用者只能編輯自己的
+        is_admin = getattr(current_user, 'role', None) == 'admin'
+        if not is_admin and item.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="沒有權限編輯此衣物")
+        
+        # 記錄管理員操作
+        if is_admin and item.user_id != current_user.id:
+            logger.info(f"管理員 {current_user.id} 編輯了使用者 {item.user_id} 的衣物 {item_id}")
+        
+        # 更新欄位（僅更新有提供的欄位）
+        if name is not None:
+            item.name = name
+            logger.info(f"更新 name: {name}")
+        
+        if category is not None:
+            # 轉換 category 從英文到中文
+            category_mapped = CATEGORY_MAP.get(category.strip(), category.strip())
+            try:
+                cat_enum = CategoryEnum(category_mapped) if category_mapped in [e.value for e in CategoryEnum] else None
+                if cat_enum:
+                    item.category = cat_enum
+                    logger.info(f"更新 category: {cat_enum.value}")
+            except Exception as e:
+                logger.warning(f"無效的 category: {category}, 錯誤: {e}")
+        
+        if color is not None:
+            item.color = color
+            logger.info(f"更新 color: {color}")
+        
+        if style is not None:
+            # 嘗試從資料庫取得 style_enum 的允許值，避免直接寫入不合法的 enum 導致 500
+            try:
+                enum_name = 'style_enum'
+                rows = db.execute(text("SELECT enumlabel FROM pg_enum JOIN pg_type ON pg_enum.enumtypid = pg_type.oid WHERE pg_type.typname = :name"), {"name": enum_name}).fetchall()
+                allowed_values = [r[0] for r in rows]
+            except Exception as _e:
+                allowed_values = None
+                logger.debug(f"無法查詢 enum 值: {_e}")
+
+            if allowed_values:
+                if style in allowed_values:
+                    item.style = style
+                    logger.info(f"更新 style: {style}")
+                else:
+                    logger.warning(f"收到未知的 style 值，跳過更新 style: {style}; 允許值: {allowed_values}")
+            else:
+                # 無法查詢 enum，採取保守策略：嘗試直接設定（若失敗會在 commit 時捕捉）
+                item.style = style
+                logger.info(f"嘗試更新 style（未驗證 enum）: {style}")
+        
+        if brand is not None:
+            item.brand = brand
+            logger.info(f"更新 brand: {brand}")
+        
+        if tags is not None:
+            item.tags = tags
+            logger.info(f"更新 tags: {tags}")
+        
+        if attributes is not None:
+            item.attributes = attributes
+            logger.info(f"更新 attributes: {attributes}")
+        
+        # 更新時間戳記
+        item.updated_at = datetime.now(timezone.utc)
+        
+        # ✅ 記錄更新前的值
+        logger.info(f"準備提交更新 - item_id: {item.id}, name: {item.name}, color: {item.color}, updated_at: {item.updated_at}")
+        
+        try:
+            db.commit()
+            logger.info(f"✓ db.commit() 執行成功")
+        except Exception as commit_error:
+            logger.error(f"✗ db.commit() 失敗: {commit_error}")
+            db.rollback()
+            raise
+        
+        try:
+            db.refresh(item)
+            logger.info(f"✓ db.refresh() 執行成功")
+        except Exception as refresh_error:
+            logger.error(f"✗ db.refresh() 失敗: {refresh_error}")
+        
+        # ✅ 記錄更新後的值
+        logger.info(f"更新後的值 - item_id: {item.id}, name: {item.name}, color: {item.color}, updated_at: {item.updated_at}")
+        
+        logger.info(f"衣物 {item_id} 更新成功")
+        
+        # 回傳更新後的資料
+        img_url = resolve_image_url(item.cover_image_url)
+        
+        dt = item.updated_at or item.created_at
+        days = None
+        now = datetime.now(timezone.utc)
+        if dt:
+            delta = now - (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc))
+            days = delta.days
+        
+        return {
+            "message": "更新成功",
+            "item": {
+                "id": str(item.id),
+                "name": item.name or "",
+                "category": item.category.value if item.category else "",
+                "color": item.color or "",
+                "img": img_url,
+                "daysInactive": days,
+                "owner_display_name": item.user.display_name if item.user else "",
+                "tags": item.tags or [],
+                "attributes": item.attributes or {},
+                "style": item.style or "",
+                "brand": item.brand or "",
+                "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+                "created_at": item.created_at.isoformat() if item.created_at else None,
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("更新衣物失敗")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"更新失敗: {str(e)}")
 
 
 @router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
