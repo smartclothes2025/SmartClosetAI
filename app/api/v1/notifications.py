@@ -1,9 +1,9 @@
-# app/api/v1/notifications.py
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from typing import Optional
-from datetime import datetime, timezone
+from typing import Optional, Dict, Any
+from datetime import datetime, timezone, timedelta
 import json
 import uuid as _uuid
 import logging
@@ -11,67 +11,82 @@ import logging
 from app.core.db import get_db
 from app.models.notification import Notification
 from app.models.auth import User
-from app.api.v1.posts import current_user_from_header
+from app.api.v1.posts import current_user_from_header  # 既有驗證
 from pydantic import BaseModel
 
 logger = logging.getLogger("uvicorn.error")
 router = APIRouter(tags=["通知"])
-
 
 # ===== Pydantic Models =====
 class NotificationCreate(BaseModel):
     user_id: str
     type: str = "new_item"
     message: str
-    details: Optional[str] = None
-    payload: Optional[dict] = None  # 改為接收字典物件，不是字串
-
+    details: Optional[Dict[str, Any]] = None
+    payload: Optional[Dict[str, Any]] = None
 
 class NotificationUpdate(BaseModel):
     is_read: bool
 
+# ===== 解析外部 user_id（數字 / UUID / 其他字串鍵）為內部整數主鍵 =====
+def _resolve_user_int_id(user_id_raw: str, db: Session) -> int:
+    if user_id_raw is None:
+        raise HTTPException(status_code=400, detail="缺少使用者 ID")
+    s = str(user_id_raw).strip()
+    if not s:
+        raise HTTPException(status_code=400, detail="無效的使用者 ID 格式")
+
+    # 1) 數字
+    try:
+        return int(s)
+    except ValueError:
+        pass
+
+    # 2) UUID -> 以 User.uuid 對應回整數主鍵
+    try:
+        u = _uuid.UUID(s)
+        user = db.query(User).filter(User.uuid == str(u)).first()
+        if user:
+            return int(user.id)
+    except ValueError:
+        pass
+
+    # 3) （可選）其他字串鍵，如 username / email
+    # user = db.query(User).filter(User.username == s).first()
+    # if user:
+    #     return int(user.id)
+
+    raise HTTPException(status_code=400, detail="無效的使用者 ID 格式")
 
 # ===== API 端點 =====
-
 @router.get("/")
 async def get_notifications(
-    user_id: str = Query(..., description="使用者 ID"),
+    user_id: str = Query(..., description="使用者 ID（可為整數、UUID 或其他字串鍵）"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     unread_only: bool = Query(False, description="只顯示未讀通知"),
     db: Session = Depends(get_db),
     current_user: User = Depends(current_user_from_header),
 ):
-    """取得使用者的通知列表"""
     try:
-        # 驗證使用者 ID (支援 Integer)
-        try:
-            user_int_id = int(user_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="無效的使用者 ID 格式")
-        
-        # 確認請求者有權限查看通知（自己或管理員）
+        user_int_id = _resolve_user_int_id(user_id, db)
+
         is_admin = getattr(current_user, 'role', None) == 'admin'
         if current_user.id != user_int_id and not is_admin:
             raise HTTPException(status_code=403, detail="無權存取此使用者的通知")
-        
-        # 查詢通知
+
         query = db.query(Notification).filter(Notification.user_id == user_int_id)
-        
         if unread_only:
             query = query.filter(Notification.is_read == False)
-        
+
         total_count = query.count()
         unread_count = db.query(Notification).filter(
             Notification.user_id == user_int_id,
             Notification.is_read == False
         ).count()
-        
-        notifications = query.order_by(
-            Notification.created_at.desc()
-        ).offset(skip).limit(limit).all()
-        
-        # 轉換為前端期望的格式
+
+        notifications = query.order_by(Notification.created_at.desc()).offset(skip).limit(limit).all()
+
         result = []
         for n in notifications:
             item = {
@@ -86,19 +101,13 @@ async def get_notifications(
                 "read_at": n.read_at.isoformat() if n.read_at else None,
             }
             result.append(item)
-        
-        return {
-            "notifications": result,
-            "total": total_count,
-            "unread_count": unread_count,
-        }
-        
+
+        return {"notifications": result, "total": total_count, "unread_count": unread_count}
     except HTTPException:
         raise
     except Exception as e:
         logger.exception("取得通知失敗")
         raise HTTPException(status_code=500, detail=f"取得通知失敗: {str(e)}")
-
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_notification(
@@ -106,36 +115,66 @@ async def create_notification(
     db: Session = Depends(get_db),
     current_user: User = Depends(current_user_from_header),
 ):
-    """建立新通知"""
     try:
-        # 驗證使用者 ID (支援 Integer)
-        try:
-            user_int_id = int(notification.user_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="無效的使用者 ID 格式")
-        
-        # 檢查使用者是否存在
+        user_int_id = _resolve_user_int_id(notification.user_id, db)
+
         user = db.query(User).filter(User.id == user_int_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="使用者不存在")
-        
-        # payload 直接使用（前端已經傳送字典物件）
+
         payload_dict = notification.payload
-        
-        # 建立通知
+        details_obj = notification.details
+
+        # 去重：10 分鐘內相同 details.toast_id 視為重複
+        toast_id = None
+        if isinstance(details_obj, dict):
+            toast_id = details_obj.get("toast_id")
+
+        if toast_id:
+            try:
+                cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+                recent = db.query(Notification).filter(
+                    Notification.user_id == user_int_id,
+                    Notification.created_at >= cutoff
+                ).all()
+                for rn in recent:
+                    rn_details = {}
+                    try:
+                        if rn.details is None:
+                            rn_details = {}
+                        elif isinstance(rn.details, dict):
+                            rn_details = rn.details
+                        else:
+                            rn_details = json.loads(rn.details)
+                    except Exception:
+                        rn_details = {}
+                    if rn_details and rn_details.get("toast_id") == toast_id:
+                        existing = {
+                            "id": str(rn.id),
+                            "user_id": rn.user_id,
+                            "type": rn.type,
+                            "message": rn.message,
+                            "details": rn.details,
+                            "payload": rn.payload,
+                            "is_read": rn.is_read,
+                            "created_at": rn.created_at.isoformat() if rn.created_at else None,
+                        }
+                        return JSONResponse(content=existing, status_code=200)
+            except Exception:
+                logger.exception("去重檢查失敗，將繼續建立通知")
+
         new_notification = Notification(
             user_id=user_int_id,
             type=notification.type,
             message=notification.message,
-            details=notification.details,
+            details=details_obj,
             payload=payload_dict,
             is_read=False,
         )
-        
         db.add(new_notification)
         db.commit()
         db.refresh(new_notification)
-        
+
         return {
             "id": str(new_notification.id),
             "user_id": new_notification.user_id,
@@ -146,7 +185,6 @@ async def create_notification(
             "is_read": new_notification.is_read,
             "created_at": new_notification.created_at.isoformat() if new_notification.created_at else None,
         }
-        
     except HTTPException:
         raise
     except Exception as e:
@@ -154,54 +192,47 @@ async def create_notification(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"建立通知失敗: {str(e)}")
 
-
 @router.patch("/{notification_id}", status_code=status.HTTP_200_OK)
 async def update_notification(
     notification_id: str,
     update_data: NotificationUpdate,
-    user_id: str = Query(..., description="使用者 ID"),
+    user_id: str = Query(..., description="使用者 ID（可為整數、UUID 或其他字串鍵）"),
     db: Session = Depends(get_db),
     current_user: User = Depends(current_user_from_header),
 ):
-    """更新通知（標記已讀/未讀）"""
     try:
-        # 驗證 UUID 和 user_id
         try:
             notif_uuid = _uuid.UUID(notification_id)
-            user_int_id = int(user_id)
         except ValueError:
-            raise HTTPException(status_code=400, detail="無效的 ID 格式")
-        
-        # 確認請求者有權限
+            raise HTTPException(status_code=400, detail="無效的通知 ID 格式")
+
+        user_int_id = _resolve_user_int_id(user_id, db)
+
         is_admin = getattr(current_user, 'role', None) == 'admin'
         if current_user.id != user_int_id and not is_admin:
             raise HTTPException(status_code=403, detail="無權修改此通知")
-        
-        # 查找通知
+
         notification = db.query(Notification).filter(
             Notification.id == notif_uuid,
             Notification.user_id == user_int_id
         ).first()
-        
         if not notification:
             raise HTTPException(status_code=404, detail="通知不存在")
-        
-        # 更新狀態
+
         notification.is_read = update_data.is_read
         if update_data.is_read and not notification.read_at:
             notification.read_at = datetime.now(timezone.utc)
         elif not update_data.is_read:
             notification.read_at = None
-        
+
         db.commit()
         db.refresh(notification)
-        
+
         return {
             "id": str(notification.id),
             "is_read": notification.is_read,
             "read_at": notification.read_at.isoformat() if notification.read_at else None,
         }
-        
     except HTTPException:
         raise
     except Exception as e:
@@ -209,44 +240,31 @@ async def update_notification(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"更新通知失敗: {str(e)}")
 
-
 @router.post("/mark-all-read", status_code=status.HTTP_200_OK)
 async def mark_all_read(
-    user_id: str = Query(..., description="使用者 ID"),
+    user_id: str = Query(..., description="使用者 ID（可為整數、UUID 或其他字串鍵）"),
     db: Session = Depends(get_db),
     current_user: User = Depends(current_user_from_header),
 ):
-    """標記所有通知為已讀"""
     try:
-        # 驗證使用者 ID
-        try:
-            user_int_id = int(user_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="無效的使用者 ID 格式")
-        
-        # 確認請求者有權限
+        user_int_id = _resolve_user_int_id(user_id, db)
+
         is_admin = getattr(current_user, 'role', None) == 'admin'
         if current_user.id != user_int_id and not is_admin:
             raise HTTPException(status_code=403, detail="無權修改通知")
-        
-        # 批次更新
+
         now = datetime.now(timezone.utc)
         result = db.execute(
             text("""
-                UPDATE notifications 
+                UPDATE notifications
                 SET is_read = true, read_at = :read_at
                 WHERE user_id = :user_id AND is_read = false
             """),
             {"user_id": user_int_id, "read_at": now}
         )
-        
         db.commit()
-        
-        return {
-            "message": "所有通知已標記為已讀",
-            "updated_count": result.rowcount
-        }
-        
+
+        return {"message": "所有通知已標記為已讀", "updated_count": result.rowcount}
     except HTTPException:
         raise
     except Exception as e:
@@ -254,42 +272,35 @@ async def mark_all_read(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"標記全部已讀失敗: {str(e)}")
 
-
 @router.delete("/{notification_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_notification(
     notification_id: str,
-    user_id: str = Query(..., description="使用者 ID"),
+    user_id: str = Query(..., description="使用者 ID（可為整數、UUID 或其他字串鍵）"),
     db: Session = Depends(get_db),
     current_user: User = Depends(current_user_from_header),
 ):
-    """刪除單一通知"""
     try:
-        # 驗證 UUID 和 user_id
         try:
             notif_uuid = _uuid.UUID(notification_id)
-            user_int_id = int(user_id)
         except ValueError:
-            raise HTTPException(status_code=400, detail="無效的 ID 格式")
-        
-        # 確認請求者有權限
+            raise HTTPException(status_code=400, detail="無效的通知 ID 格式")
+
+        user_int_id = _resolve_user_int_id(user_id, db)
+
         is_admin = getattr(current_user, 'role', None) == 'admin'
         if current_user.id != user_int_id and not is_admin:
             raise HTTPException(status_code=403, detail="無權刪除此通知")
-        
-        # 查找並刪除
+
         notification = db.query(Notification).filter(
             Notification.id == notif_uuid,
             Notification.user_id == user_int_id
         ).first()
-        
         if not notification:
             raise HTTPException(status_code=404, detail="通知不存在")
-        
+
         db.delete(notification)
         db.commit()
-        
         return None
-        
     except HTTPException:
         raise
     except Exception as e:
@@ -297,39 +308,24 @@ async def delete_notification(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"刪除通知失敗: {str(e)}")
 
-
 @router.delete("/", status_code=status.HTTP_200_OK)
 async def delete_all_notifications(
-    user_id: str = Query(..., description="使用者 ID"),
+    user_id: str = Query(..., description="使用者 ID（可為整數、UUID 或其他字串鍵）"),
     db: Session = Depends(get_db),
     current_user: User = Depends(current_user_from_header),
 ):
-    """刪除使用者的所有通知"""
     try:
-        # 驗證使用者 ID
-        try:
-            user_int_id = int(user_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="無效的使用者 ID 格式")
-        
-        # 確認請求者有權限
+        user_int_id = _resolve_user_int_id(user_id, db)
+
         is_admin = getattr(current_user, 'role', None) == 'admin'
         if current_user.id != user_int_id and not is_admin:
             raise HTTPException(status_code=403, detail="無權刪除通知")
-        
-        # 批次刪除
-        result = db.execute(
-            text("DELETE FROM notifications WHERE user_id = :user_id"),
-            {"user_id": user_int_id}
-        )
-        
+
+        result = db.execute(text("DELETE FROM notifications WHERE user_id = :user_id"),
+                            {"user_id": user_int_id})
         db.commit()
-        
-        return {
-            "message": "所有通知已刪除",
-            "deleted_count": result.rowcount
-        }
-        
+
+        return {"message": "所有通知已刪除", "deleted_count": result.rowcount}
     except HTTPException:
         raise
     except Exception as e:

@@ -13,6 +13,7 @@ class CategoryEnum(str, Enum):
     DRESS = "洋裝"
     OUTER = "外套"
     SHOES = "鞋子"
+    SOCKS = "襪子"
     HAT = "帽子"
     BAG = "包包"
     ACCESSORY = "配件"
