@@ -93,7 +93,7 @@ class FashionAdvisor:
             vertexai.init(project=self.gcp_project_id, location=self.gcp_location)
             
             # 使用 Vertex AI 的模型名稱 (例如 "gemini-1.0-pro" 或 "gemini-1.5-flash-001")
-            self.text_model = GenerativeModel("gemini-1.5-flash-001") 
+            self.text_model = GenerativeModel("gemini-2.5-flash") 
             # 使用 Imagen 模型進行圖片生成
             self.image_model = ImageGenerationModel.from_pretrained("imagegeneration@006")
             logger.info(f"Vertex AI (GCP) API 初始化成功")
