@@ -17,19 +17,11 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="SmartClosetAI API")
 
-# CORS：多加 5175 埠，或開發時全部允許 "*"
+# CORS：開發環境允許所有來源
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        # 以下開發時可暫時開放所有 origin
-        # "*",
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],  # 開發環境允許所有來源
+    allow_credentials=False,  # 允許所有來源時必須設為 False
     allow_methods=["*"],
     allow_headers=["*"],
 )

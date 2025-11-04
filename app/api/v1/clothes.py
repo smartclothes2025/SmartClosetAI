@@ -1,9 +1,8 @@
-# app/api/v1/clothes.py
-# -*- coding: utf-8 -*-
-
-from fastapi import (
-    APIRouter, UploadFile, File, Depends, HTTPException, Form, status, Body, Request
-)
+"""
+修正後的衣物路由 - 統一圖片 URL 處理
+放置位置: app/api/v1/clothes.py
+"""
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form, status, Body, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -22,62 +21,19 @@ from app.models.wardrobe import WardrobeItem, CategoryEnum
 from app.models.auth import User
 from app.api.v1.auth import get_current_user
 from app.services.image_processing import process_image, analyze_clothing_type
-from app.services.storage import (
-    upload_file_to_gcs,
-    delete_file_from_gcs,
-    generate_signed_url_from_gcs_uri,
-    is_gcs_like_url,
-)
+from app.services.storage import upload_file_to_gcs  # GCS 上傳服務
 
-# -----------------------------------------------------------------------------
-# 設定 / 常數
-# -----------------------------------------------------------------------------
-router = APIRouter()
-logger = logging.getLogger(__name__)
+# 確保載入環境變數
+from dotenv import load_dotenv
+load_dotenv()
 
-UPLOAD_ROOT = Path("uploads")
-UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
-
-security_optional = HTTPBearer(auto_error=False)
-
-# 是否啟用 GCS（從環境變數讀取）
-USE_GCS = os.getenv("USE_GCS", "false").lower() == "true"
-GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "")
-
-# 前端英文值到資料庫中文值的映射
-CATEGORY_MAP = {
-    "tops": "上衣",
-    "skirts": "裙子",
-    "pants": "褲子",
-    "dresses": "洋裝",
-    "outerwear": "外套",
-    "shoes": "鞋子",
-    "hats": "帽子",
-    "bags": "包包",
-    "accessories": "配件",
-    "bottoms": "褲子",
-        "socks": "襪子",  # Add mapping for socks
-    # 已是中文者原樣通過
-    "上衣": "上衣",
-    "裙子": "裙子",
-    "褲子": "褲子",
-    "洋裝": "洋裝",
-    "外套": "外套",
-    "鞋子": "鞋子",
-    "帽子": "帽子",
-    "包包": "包包",
-    "配件": "配件",
-}
-
-
-# -----------------------------------------------------------------------------
-# 工具函式
-# -----------------------------------------------------------------------------
+# ✅ 匯入圖片 URL 處理函數
 def resolve_image_url(uri: str) -> str:
-    """將 DB 中的圖片 URI 轉成可直接存取的 URL（gs:// → 簽名網址；其他原樣返回）"""
+    """轉換圖片 URI 為可訪問的 URL"""
     if not uri:
         return ""
     if uri.startswith("gs://"):
+        from app.services.storage import generate_signed_url_from_gcs_uri
         try:
             return generate_signed_url_from_gcs_uri(uri, expiration_minutes=60)
         except Exception as e:
@@ -86,41 +42,7 @@ def resolve_image_url(uri: str) -> str:
     return uri
 
 
-def _sanitize_name(raw: str) -> str:
-    """清理檔名為安全字元"""
-    raw = (raw or "").strip()
-    if not raw:
-        return "file"
-    return re.sub(r"[^\w\u4e00-\u9fff\-\s]", "_", raw)[:120].strip() or "file"
-
-
-async def _get_optional_current_user(
-    db: Session = Depends(get_db),
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
-) -> Optional[User]:
-    """
-    可選的使用者認證（允許訪客）。配合簡易 token：Bearer user-<id>-token
-    """
-    if not credentials:
-        return None
-
-    token = credentials.credentials
-    prefix, suffix = "user-", "-token"
-
-    if isinstance(token, str) and token.startswith(prefix) and token.endswith(suffix):
-        raw_id = token[len(prefix) : -len(suffix)]
-        try:
-            parsed_id = int(raw_id)
-        except Exception:
-            parsed_id = raw_id
-        return db.query(User).filter(User.id == parsed_id).first()
-
-    return None
-
-
-# -----------------------------------------------------------------------------
-# Pydantic 請求模型
-# -----------------------------------------------------------------------------
+# ✅ Pydantic 模型：衣物更新請求
 class ClothesUpdateRequest(BaseModel):
     name: Optional[str] = None
     category: Optional[str] = None
@@ -138,14 +60,84 @@ class ClothesUpdateRequest(BaseModel):
                 "color": "白色",
                 "style": "休閒",
                 "tags": ["夏季", "基本款"],
-                "attributes": {"brand": "Uniqlo", "size": "M"},
+                "attributes": {"brand": "Uniqlo", "size": "M"}
             }
         }
 
 
-# -----------------------------------------------------------------------------
-# 路由：上傳衣物
-# -----------------------------------------------------------------------------
+router = APIRouter()
+logger = logging.getLogger(__name__)
+
+UPLOAD_ROOT = Path("uploads")
+UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+
+security_optional = HTTPBearer(auto_error=False)
+
+# 是否啟用 GCS（從環境變數讀取）
+USE_GCS = os.getenv("USE_GCS", "false").lower() == "true"
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "")
+
+# ========== 臨時 DEBUG 碼 START ==========
+print(f"DEBUG: USE_GCS 實際值: {USE_GCS}")
+print(f"DEBUG: GCS_BUCKET_NAME 實際值: {GCS_BUCKET_NAME}")
+# ========== 臨時 DEBUG 碼 END ==========
+
+# 前端英文值到資料庫中文值的映射
+CATEGORY_MAP = {
+    "tops": "上衣",
+    "skirts": "裙子",
+    "pants": "褲子",
+    "dresses": "洋裝",
+    "outerwear": "外套",
+    "shoes": "鞋子",
+    "hats": "帽子",
+    "bags": "包包",
+    "accessories": "配件",
+    "bottoms": "褲子",  # bottoms 也映射到褲子
+    # 已經是中文的直接通過
+    "上衣": "上衣",
+    "裙子": "裙子",
+    "褲子": "褲子",
+    "洋裝": "洋裝",
+    "外套": "外套",
+    "鞋子": "鞋子",
+    "帽子": "帽子",
+    "包包": "包包",
+    "配件": "配件",
+}
+
+def _sanitize_name(raw: str) -> str:
+    """清理檔案名稱"""
+    raw = (raw or "").strip()
+    if not raw:
+        return "file"
+    return re.sub(r"[^\w\u4e00-\u9fff\-\s]", "_", raw)[:120].strip() or "file"
+
+
+async def _get_optional_current_user(
+    db: Session = Depends(get_db),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional)
+) -> Optional[User]:
+    """可選的使用者認證（允許訪客存取）"""
+    if not credentials:
+        return None
+    
+    token = credentials.credentials
+    # 您的 token 解析邏輯
+    prefix, suffix = "user-", "-token"
+    
+    if isinstance(token, str) and token.startswith(prefix) and token.endswith(suffix):
+        raw_id = token[len(prefix):-len(suffix)]
+        try:
+            parsed_id = int(raw_id)
+        except:
+            parsed_id = raw_id
+        
+        user = db.query(User).filter(User.id == parsed_id).first()
+        return user
+    return None
+
+
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def upload_clothes(
     file: UploadFile = File(...),
@@ -164,124 +156,146 @@ async def upload_clothes(
     temp_file_path: Optional[Path] = None
     processed_file_path: Optional[Path] = None
     final_file_path: Optional[Path] = None
-
+    
     try:
-        # 1) 解析參數
+        # 1. 解析參數
         tags_list = json.loads(tags) if tags else []
         attributes_dict = json.loads(attributes) if attributes else {}
+        
         ai_detect_enabled = ai_detect == "1"
         remove_bg_enabled = remove_bg == "1"
-
-        # 類別英文→中文
+        
+        # 轉換 category 從英文到中文
         category = CATEGORY_MAP.get(category.strip(), category.strip()) or "上衣"
         logger.info(f"收到 category: {category}")
-
-        # 2) 儲存原始檔
+        
+        # 2. 儲存原始檔案
         safe_stem = _sanitize_name(name) if name.strip() else _sanitize_name(Path(file.filename).stem)
         orig_ext = Path(file.filename).suffix or ".jpg"
-
+        
         temp_dir = UPLOAD_ROOT / "temp"
         temp_dir.mkdir(parents=True, exist_ok=True)
         temp_file_name = f"{safe_stem}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_temp{orig_ext}"
         temp_file_path = temp_dir / temp_file_name
-
+        
         with open(temp_file_path, "wb") as out:
             file.file.seek(0)
             shutil.copyfileobj(file.file, out)
-
+        
         final_file_path = temp_file_path
-
-        # 3) 去背
+        
+        # 3. 去背處理
         if remove_bg_enabled:
             logger.info(f"執行去背: {final_file_path}")
             proc_res = process_image(str(final_file_path))
             processed_file_path = Path(proc_res["processed_image_path"])
             final_file_path = processed_file_path
-
-        # 4) AI 辨識
+        
+        # 4. AI 辨識
         if ai_detect_enabled:
             logger.info(f"執行 AI 辨識: {final_file_path}")
             analysis_result = analyze_clothing_type(str(final_file_path), ai_detect_enabled=True)
+            
             if analysis_result.get("category") and analysis_result["category"] != "特殊":
                 category = analysis_result["category"]
             if analysis_result.get("colors"):
                 color = analysis_result["colors"][0]
             if analysis_result.get("style"):
                 style = analysis_result["style"]
-
-        # 5) 轉換為枚舉
+        
+        # 5. 決定最終儲存位置
         try:
             cat_enum = CategoryEnum(category) if category in [e.value for e in CategoryEnum] else CategoryEnum.TOP
-        except Exception:
+        except:
             cat_enum = CategoryEnum.TOP
-
-        # 6) 實際存檔（GCS 或本地）
+        
+        # ✅ 關鍵修改：統一的檔案儲存邏輯（帶 GCS fallback）
+        gcs_success = False
+        print(f"\n{'='*60}")
+        print(f"[上傳] 開始處理: {name or safe_stem}")
+        print(f"[配置] USE_GCS={USE_GCS}, BUCKET={GCS_BUCKET_NAME}")
+        print(f"{'='*60}")
+        
         if USE_GCS and GCS_BUCKET_NAME:
-            safe_cat = category.strip().replace("/", "_")
-            # 依你專案結構：wardrobe/wardrobe_items.<user_id>/<類別>/<檔名>
-            gcs_path = f"wardrobe/wardrobe_items.{current_user.id}/{safe_cat}/{safe_stem}{final_file_path.suffix}"
-
-            with open(final_file_path, "rb") as f:
-                file_bytes = f.read()
-
-            ext = final_file_path.suffix.lower()
-            if ext == ".png":
-                mime_type = "image/png"
-            elif ext in [".jpg", ".jpeg"]:
-                mime_type = "image/jpeg"
-            elif ext == ".webp":
-                mime_type = "image/webp"
-            else:
-                mime_type = "image/jpeg"
-
-            logger.info(f"上傳至 GCS: {gcs_path}")
-            gcs_url = upload_file_to_gcs(
-                file_bytes=file_bytes,
-                destination_blob_name=gcs_path,
-                mime_type=mime_type,
-                bucket_name=GCS_BUCKET_NAME,
-                public=False,
-            )
-            # DB 建議統一存 gs://...
-            cover_url = gcs_url
-            logger.info(f"GCS URL: {cover_url}")
-        else:
+            # 嘗試上傳到 GCS
+            try:
+                safe_cat = category.strip().replace("/", "_")
+                gcs_path = f"clothes/{safe_cat}/{safe_stem}{final_file_path.suffix}"
+                
+                # 讀取檔案內容為 bytes
+                with open(final_file_path, "rb") as f:
+                    file_bytes = f.read()
+                
+                # 決定 MIME type
+                ext = final_file_path.suffix.lower()
+                if ext == ".png":
+                    mime_type = "image/png"
+                elif ext in [".jpg", ".jpeg"]:
+                    mime_type = "image/jpeg"
+                elif ext == ".webp":
+                    mime_type = "image/webp"
+                else:
+                    mime_type = "image/jpeg"
+                
+                print(f"[GCS] 嘗試上傳至: {gcs_path}")
+                logger.info(f"嘗試上傳至 GCS: {gcs_path}")
+                gcs_url = upload_file_to_gcs(
+                    file_bytes=file_bytes,
+                    destination_blob_name=gcs_path,
+                    mime_type=mime_type,
+                    bucket_name=GCS_BUCKET_NAME,
+                    public=False
+                )
+                cover_url = gcs_url  # 使用 GCS URL
+                gcs_success = True
+                print(f"[成功] GCS 上傳成功: {cover_url}")
+                logger.info(f"✅ GCS 上傳成功: {cover_url}")
+            except Exception as gcs_error:
+                print(f"[警告] GCS 上傳失敗: {gcs_error}")
+                print(f"[備案] 將使用本地儲存")
+                logger.warning(f"⚠️ GCS 上傳失敗，fallback 到本地儲存: {gcs_error}")
+                gcs_success = False
+        
+        # 如果 GCS 失敗或未啟用，儲存到本地
+        if not gcs_success:
             safe_cat = category.strip().replace("/", "_")
             dest_dir = UPLOAD_ROOT / safe_cat
             dest_dir.mkdir(parents=True, exist_ok=True)
-
+            
             final_ext = final_file_path.suffix
             candidate = f"{safe_stem}{final_ext}"
             save_path = dest_dir / candidate
-
+            
             if save_path.exists():
                 stamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
                 candidate = f"{safe_stem}_{stamp}{final_ext}"
                 save_path = dest_dir / candidate
-
+            
             shutil.move(str(final_file_path), str(save_path))
             cover_url = f"/uploads/{safe_cat}/{candidate}"
-
-        # 7) 建立 DB 記錄
+            print(f"[本地] 儲存成功: {cover_url}")
+            logger.info(f"✅ 本地儲存成功: {cover_url}")
+        
+        # 6. 建立資料庫記錄
         item = WardrobeItem(
             user_id=current_user.id,
             name=name or safe_stem,
             category=cat_enum,
             color=color or "",
-            cover_image_url=cover_url,  # DB 儲存 gs:// 或 /uploads/...
+            cover_image_url=cover_url,  # ✅ 直接儲存原始 URL
             tags=tags_list,
             attributes=attributes_dict,
             brand=attributes_dict.get("brand", ""),
             style=style if style else None,
         )
-
+        
         db.add(item)
         db.commit()
         db.refresh(item)
-
-        # 回傳前統一處理 URL
+        
+        # ✅ 回傳時使用統一的 URL 處理
         resolved_url = resolve_image_url(item.cover_image_url)
-
+        
         return {
             "message": "上傳成功",
             "item": {
@@ -289,13 +303,13 @@ async def upload_clothes(
                 "name": item.name,
                 "category": item.category.value,
                 "color": item.color,
-                "img": resolved_url,
+                "img": resolved_url,  # ✅ 統一處理後的 URL
                 "daysInactive": None,
                 "owner_display_name": item.user.display_name if item.user else "",
                 "last_worn_at": item.last_worn_at.isoformat() if item.last_worn_at else None,
-            },
+            }
         }
-
+        
     except HTTPException:
         raise
     except Exception as e:
@@ -304,112 +318,112 @@ async def upload_clothes(
         raise HTTPException(status_code=500, detail=f"上傳失敗: {str(e)}")
     finally:
         # 清理臨時檔案
-        for path in (temp_file_path, processed_file_path):
+        for path in [temp_file_path, processed_file_path]:
             if path and path.exists():
                 try:
                     os.unlink(path)
                     logger.debug(f"已刪除臨時檔案: {path}")
-                except Exception as ex:
-                    logger.warning(f"無法刪除臨時檔案 {path}: {ex}")
+                except Exception as e:
+                    logger.warning(f"無法刪除臨時檔案 {path}: {e}")
 
 
-# -----------------------------------------------------------------------------
-# 路由：列出衣物
-# -----------------------------------------------------------------------------
 @router.get("/")
 def list_clothes(
     limit: int = 50,
     scope: Optional[str] = None,
     db: Session = Depends(get_db),
-    user: Optional[User] = Depends(_get_optional_current_user),
+    user: Optional[User] = Depends(_get_optional_current_user)
 ):
     """取得衣櫃清單"""
     try:
         # 訪客檢查
-        if user and (user.id == 99 or user.email == "guest@local"):
-            return []
-
+        if user:
+            if user.id == 99 or user.email == "guest@local":
+                return []
+        
         q = db.query(WardrobeItem)
-
-        is_admin = user and getattr(user, "role", None) == "admin"
+        # ✅ 判斷是否為管理者且請求所有衣物
+        is_admin = user and getattr(user, 'role', None) == 'admin'
         if scope == "all" and is_admin:
+            # 管理者請求所有衣物,不過濾 user_id
             logger.info(f"管理者 {user.id} 請求所有衣物")
         elif user:
+            # 普通使用者只能看到自己的衣物
             q = q.filter(WardrobeItem.user_id == user.id)
-
+        
         q = q.order_by(WardrobeItem.created_at.desc()).limit(limit)
         rows = q.all()
-
-        result: List[Dict[str, Any]] = []
+        
+        result = []
         now = datetime.now(timezone.utc)
-
+        
         for item in rows:
+            # ✅ 使用統一的 URL 處理工具
             img_url = resolve_image_url(item.cover_image_url)
+            
+            # 追蹤 URL 轉換
             logger.info(f"Item ID {item.id}: DB-URI='{item.cover_image_url}', Resolved-URL='{img_url}'")
 
+            # 計算 daysInactive
             dt = item.updated_at or item.created_at
             days = None
             if dt:
-                base = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-                days = (now - base).days
-
-            result.append(
-                {
-                    "id": str(item.id),
-                    "name": item.name or "",
-                    "category": item.category.value if item.category else "",
-                    "color": item.color or "",
-                    "img": img_url,
-                    "daysInactive": days,
-                    "owner_display_name": item.user.display_name if item.user else "",
-                    "user_id": item.user_id,
-                    "updated_at": item.updated_at.isoformat() if item.updated_at else None,
-                    "created_at": item.created_at.isoformat() if item.created_at else None,
-                }
-            )
-
+                delta = now - (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc))
+                days = delta.days
+            
+            result.append({
+                "id": str(item.id),
+                "name": item.name or "",
+                "category": item.category.value if item.category else "",
+                "color": item.color or "",
+                "img": img_url,  # ✅ 統一處理後的 URL
+                "daysInactive": days,
+                "owner_display_name": item.user.display_name if item.user else "",
+                "user_id": item.user_id,
+                "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+                "created_at": item.created_at.isoformat() if item.created_at else None,
+            })
+        
         return result
-
-    except Exception:
+        
+    except Exception as e:
         logger.exception("取得衣櫃清單失敗")
         raise HTTPException(status_code=500, detail="讀取衣櫃失敗")
 
 
-# -----------------------------------------------------------------------------
-# 路由：單筆衣物
-# -----------------------------------------------------------------------------
 @router.get("/{item_id}")
 def get_clothes_item(
     item_id: str,
     db: Session = Depends(get_db),
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional)
 ):
     """取得單一衣物詳情"""
     try:
         try:
             parsed_id = int(item_id)
-        except Exception:
+        except:
             parsed_id = item_id
-
+        
         item = db.query(WardrobeItem).filter(WardrobeItem.id == parsed_id).first()
         if not item:
             raise HTTPException(status_code=404, detail="找不到該衣物")
-
+        
+        # ✅ 使用統一的 URL 處理
         img_url = resolve_image_url(item.cover_image_url)
-
+        
         dt = item.updated_at or item.created_at
         days = None
         now = datetime.now(timezone.utc)
         if dt:
-            base = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-            days = (now - base).days
-
+            delta = now - (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc))
+            days = delta.days
+        
         return {
             "id": str(item.id),
             "name": item.name or "",
             "category": item.category.value if item.category else "",
             "color": item.color or "",
-            "img": img_url,
+            "img": img_url,  # ✅ 統一處理後的 URL
             "daysInactive": days,
             "owner_display_name": item.user.display_name if item.user else "",
             "tags": item.tags or [],
@@ -417,17 +431,14 @@ def get_clothes_item(
             "updated_at": item.updated_at.isoformat() if item.updated_at else None,
             "created_at": item.created_at.isoformat() if item.created_at else None,
         }
-
+        
     except HTTPException:
         raise
-    except Exception:
+    except Exception as e:
         logger.exception("取得衣物詳情失敗")
         raise HTTPException(status_code=500, detail="讀取衣物失敗")
 
 
-# -----------------------------------------------------------------------------
-# 路由：更新衣物
-# -----------------------------------------------------------------------------
 @router.patch("/{item_id}")
 @router.put("/{item_id}")
 async def update_clothes_item(
@@ -435,30 +446,32 @@ async def update_clothes_item(
     request: Request,
     body: Optional[Dict[str, Any]] = Body(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
-    """更新衣物資訊（支援部分更新，接受 JSON）"""
+    """更新衣物資訊（支援部分更新,同時支援 PATCH 和 PUT 方法,接受 JSON 格式）"""
     try:
         logger.info(f"收到更新請求 - item_id: {item_id}")
         logger.info(f"原始 request body: {body}")
 
-        # 支援 { "payload": {...} } 或直接 {...}
+        # 支援兩種前端格式：{ "payload": {...} } 或 直接傳 {"name":..., "color":...}
         data = None
         if isinstance(body, dict):
-            data = body.get("payload", body)
+            data = body.get('payload', body)
 
+        # 如果 FastAPI 沒有解析到 body（body is None），嘗試直接從 request 讀取原始 JSON（更健壯）
         if data is None:
             try:
                 raw = await request.json()
                 if isinstance(raw, dict):
-                    data = raw.get("payload", raw)
-            except Exception as ex:
-                logger.debug(f"無法從 request.json() 取得 body: {ex}")
+                    data = raw.get('payload', raw)
+            except Exception as e:
+                logger.debug(f"無法從 request.json() 取得 body: {e}")
 
+        # 若仍無 data，返回更清楚的錯誤（讓前端更容易除錯）
         if data is None:
             raise HTTPException(status_code=422, detail="缺少 request body 或 payload")
 
-        # Pydantic 驗證
+        # 使用 Pydantic 驗證（pydantic v2）
         try:
             payload = ClothesUpdateRequest.model_validate(data)
         except Exception as e:
@@ -467,7 +480,7 @@ async def update_clothes_item(
 
         logger.info(f"更新資料 (validated): {payload.model_dump(exclude_none=True)}")
 
-        # 欄位取出
+        # 從 payload 提取值
         name = payload.name
         category = payload.category
         color = payload.color
@@ -475,53 +488,52 @@ async def update_clothes_item(
         attributes = payload.attributes
         style = payload.style
         brand = payload.brand
-
-        # 解析 ID 與查詢
+        
+        # 解析 item_id
         try:
             parsed_id = int(item_id)
-        except Exception:
+        except:
             parsed_id = item_id
-
+        
+        # 查詢衣物
         item = db.query(WardrobeItem).filter(WardrobeItem.id == parsed_id).first()
         if not item:
             raise HTTPException(status_code=404, detail="找不到該衣物")
-
-        # 權限
-        is_admin = getattr(current_user, "role", None) == "admin"
+        
+        # 檢查權限：管理員可以編輯所有衣物，一般使用者只能編輯自己的
+        is_admin = getattr(current_user, 'role', None) == 'admin'
         if not is_admin and item.user_id != current_user.id:
             raise HTTPException(status_code=403, detail="沒有權限編輯此衣物")
-
+        
+        # 記錄管理員操作
         if is_admin and item.user_id != current_user.id:
             logger.info(f"管理員 {current_user.id} 編輯了使用者 {item.user_id} 的衣物 {item_id}")
-
-        # 實際更新（僅更新有提供者）
+        
+        # 更新欄位（僅更新有提供的欄位）
         if name is not None:
             item.name = name
-
+            logger.info(f"更新 name: {name}")
+        
         if category is not None:
-            mapped = CATEGORY_MAP.get(category.strip(), category.strip())
+            # 轉換 category 從英文到中文
+            category_mapped = CATEGORY_MAP.get(category.strip(), category.strip())
             try:
-                cat_enum = CategoryEnum(mapped) if mapped in [e.value for e in CategoryEnum] else None
+                cat_enum = CategoryEnum(category_mapped) if category_mapped in [e.value for e in CategoryEnum] else None
                 if cat_enum:
                     item.category = cat_enum
-            except Exception as ex:
-                logger.warning(f"無效的 category: {category}, 錯誤: {ex}")
-
+                    logger.info(f"更新 category: {cat_enum.value}")
+            except Exception as e:
+                logger.warning(f"無效的 category: {category}, 錯誤: {e}")
+        
         if color is not None:
             item.color = color
-
+            logger.info(f"更新 color: {color}")
+        
         if style is not None:
-            # 嘗試查詢 enum 允許值
+            # 嘗試從資料庫取得 style_enum 的允許值，避免直接寫入不合法的 enum 導致 500
             try:
-                enum_name = "style_enum"
-                rows = db.execute(
-                    text(
-                        "SELECT enumlabel FROM pg_enum "
-                        "JOIN pg_type ON pg_enum.enumtypid = pg_type.oid "
-                        "WHERE pg_type.typname = :name"
-                    ),
-                    {"name": enum_name},
-                ).fetchall()
+                enum_name = 'style_enum'
+                rows = db.execute(text("SELECT enumlabel FROM pg_enum JOIN pg_type ON pg_enum.enumtypid = pg_type.oid WHERE pg_type.typname = :name"), {"name": enum_name}).fetchall()
                 allowed_values = [r[0] for r in rows]
             except Exception as _e:
                 allowed_values = None
@@ -530,43 +542,61 @@ async def update_clothes_item(
             if allowed_values:
                 if style in allowed_values:
                     item.style = style
+                    logger.info(f"更新 style: {style}")
                 else:
-                    logger.warning(f"未知的 style 值，跳過更新: {style}; 允許: {allowed_values}")
+                    logger.warning(f"收到未知的 style 值，跳過更新 style: {style}; 允許值: {allowed_values}")
             else:
-                item.style = style  # 保守策略
-
+                # 無法查詢 enum，採取保守策略：嘗試直接設定（若失敗會在 commit 時捕捉）
+                item.style = style
+                logger.info(f"嘗試更新 style（未驗證 enum）: {style}")
+        
         if brand is not None:
             item.brand = brand
-
+            logger.info(f"更新 brand: {brand}")
+        
         if tags is not None:
             item.tags = tags
-
+            logger.info(f"更新 tags: {tags}")
+        
         if attributes is not None:
             item.attributes = attributes
-
+            logger.info(f"更新 attributes: {attributes}")
+        
+        # 更新時間戳記
         item.updated_at = datetime.now(timezone.utc)
-
+        
+        # ✅ 記錄更新前的值
+        logger.info(f"準備提交更新 - item_id: {item.id}, name: {item.name}, color: {item.color}, updated_at: {item.updated_at}")
+        
         try:
             db.commit()
+            logger.info(f"✓ db.commit() 執行成功")
         except Exception as commit_error:
-            logger.error(f"db.commit() 失敗: {commit_error}")
+            logger.error(f"✗ db.commit() 失敗: {commit_error}")
             db.rollback()
             raise
-
+        
         try:
             db.refresh(item)
+            logger.info(f"✓ db.refresh() 執行成功")
         except Exception as refresh_error:
-            logger.error(f"db.refresh() 失敗: {refresh_error}")
-
-        # 回傳
+            logger.error(f"✗ db.refresh() 失敗: {refresh_error}")
+        
+        # ✅ 記錄更新後的值
+        logger.info(f"更新後的值 - item_id: {item.id}, name: {item.name}, color: {item.color}, updated_at: {item.updated_at}")
+        
+        logger.info(f"衣物 {item_id} 更新成功")
+        
+        # 回傳更新後的資料
         img_url = resolve_image_url(item.cover_image_url)
-        now = datetime.now(timezone.utc)
+        
         dt = item.updated_at or item.created_at
         days = None
+        now = datetime.now(timezone.utc)
         if dt:
-            base = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-            days = (now - base).days
-
+            delta = now - (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc))
+            days = delta.days
+        
         return {
             "message": "更新成功",
             "item": {
@@ -583,9 +613,9 @@ async def update_clothes_item(
                 "brand": item.brand or "",
                 "updated_at": item.updated_at.isoformat() if item.updated_at else None,
                 "created_at": item.created_at.isoformat() if item.created_at else None,
-            },
+            }
         }
-
+        
     except HTTPException:
         raise
     except Exception as e:
@@ -594,83 +624,50 @@ async def update_clothes_item(
         raise HTTPException(status_code=500, detail=f"更新失敗: {str(e)}")
 
 
-# -----------------------------------------------------------------------------
-# 路由：刪除衣物（會同時刪除圖檔）
-# -----------------------------------------------------------------------------
 @router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_clothes_item(
     item_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user)
 ):
-    """刪除衣物（管理員可刪除所有使用者的衣物）；先刪檔後刪 DB。"""
+    """刪除衣物（管理員可刪除所有使用者的衣物）"""
     try:
         try:
             parsed_id = int(item_id)
-        except Exception:
+        except:
             parsed_id = item_id
-
+        
         item = db.query(WardrobeItem).filter(WardrobeItem.id == parsed_id).first()
         if not item:
             raise HTTPException(status_code=404, detail="找不到該衣物")
-
-        is_admin = getattr(current_user, "role", None) == "admin"
+        
+        # 檢查權限：管理員可以刪除所有衣物，一般使用者只能刪除自己的
+        is_admin = getattr(current_user, 'role', None) == 'admin'
+        
         if not is_admin and item.user_id != current_user.id:
             raise HTTPException(status_code=403, detail="沒有權限刪除此衣物")
-
+        
+        # 管理員刪除時記錄日誌
         if is_admin and item.user_id != current_user.id:
             logger.info(f"管理員 {current_user.id} 刪除了使用者 {item.user_id} 的衣物 {item_id}")
-
-        # --- 先刪除圖片 ---
-        img_uri = item.cover_image_url
-        deleted_remote = True  # 預設當成功（若沒有圖片也不阻擋）
-
-        if img_uri and isinstance(img_uri, str):
-            # 1) 本地檔案：/uploads/...
-            if img_uri.startswith("/uploads/"):
-                relative_path = Path(img_uri.lstrip("/"))
-                abs_path = (UPLOAD_ROOT.parent / relative_path).resolve()
-
-                # 僅允許刪除 uploads 目錄底下的檔案
-                uploads_root = (UPLOAD_ROOT.parent / "uploads").resolve()
-                if str(abs_path).startswith(str(uploads_root)):
-                    try:
-                        if abs_path.exists():
-                            abs_path.unlink()
-                            logger.info(f"已刪除本地圖片: {abs_path}")
-                        else:
-                            logger.warning(f"刪除本地圖片：檔案不存在（視為成功） {abs_path}")
-                    except Exception as ex:
-                        logger.warning(f"刪除本地圖片時發生錯誤: {ex}")
-                        deleted_remote = False
-
-            # 2) GCS 物件（gs://、storage.googleapis.com、storage.cloud.google.com、firebase、gcs/<bucket>/...）
-            elif is_gcs_like_url(img_uri):
-                try:
-                    ok = delete_file_from_gcs(img_uri, bucket_name=GCS_BUCKET_NAME or None)
-                    deleted_remote = ok
-                    if ok:
-                        logger.info(f"已刪除或不存在（視為成功）：{img_uri}")
-                    else:
-                        logger.warning(f"GCS 圖片刪除失敗（權限/解析/連線）：{img_uri}")
-                except Exception as ex:
-                    logger.warning(f"GCS 刪除例外：{ex}")
-                    deleted_remote = False
-
-            # 3) 其他外部 URL：忽略
-            else:
-                logger.info(f"衣物圖片為外部 URL，跳過刪除: {img_uri}")
-
-        # --- 再刪除 DB 記錄 ---
+        
+        # 刪除圖片檔案（僅本地檔案）
+        img_path = item.cover_image_url
+        if img_path and img_path.startswith("/uploads/"):
+            abs_path = Path(img_path.lstrip("/"))
+            try:
+                if abs_path.exists():
+                    abs_path.unlink()
+                    logger.info(f"已刪除圖片: {abs_path}")
+            except Exception as e:
+                logger.warning(f"刪除圖片失敗: {e}")
+        
         db.delete(item)
         db.commit()
-
-        # 若檔案刪除失敗，仍回 204，但在日誌提醒
-        if not deleted_remote:
-            logger.warning(f"衣物 {item_id} DB 已刪，但圖檔刪除可能失敗，請檢查權限/路徑。")
-
+        
+        # ✅ 204 狀態碼不應回傳內容
         return None
-
+        
     except HTTPException:
         raise
     except Exception as e:
