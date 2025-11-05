@@ -68,19 +68,15 @@ class ClothesUpdateRequest(BaseModel):
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-UPLOAD_ROOT = Path("uploads")
-UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
-
 security_optional = HTTPBearer(auto_error=False)
 
-# 是否啟用 GCS（從環境變數讀取）
-USE_GCS = os.getenv("USE_GCS", "false").lower() == "true"
-GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "")
+# ❌ 強制啟用 GCS，不再支援本地儲存
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "smartclothes_wardrobe")
 
-# ========== 臨時 DEBUG 碼 START ==========
-print(f"DEBUG: USE_GCS 實際值: {USE_GCS}")
-print(f"DEBUG: GCS_BUCKET_NAME 實際值: {GCS_BUCKET_NAME}")
-# ========== 臨時 DEBUG 碼 END ==========
+if not GCS_BUCKET_NAME:
+    logger.error("⚠️ GCS_BUCKET_NAME 未設定，上傳功能將無法使用！")
+
+logger.info(f"✅ GCS 模式已啟用，Bucket: {GCS_BUCKET_NAME}")
 
 # 前端英文值到資料庫中文值的映射
 CATEGORY_MAP = {
@@ -169,11 +165,13 @@ async def upload_clothes(
         category = CATEGORY_MAP.get(category.strip(), category.strip()) or "上衣"
         logger.info(f"收到 category: {category}")
         
-        # 2. 儲存原始檔案
+        # 2. 儲存原始檔案到臨時位置(僅用於處理)
         safe_stem = _sanitize_name(name) if name.strip() else _sanitize_name(Path(file.filename).stem)
         orig_ext = Path(file.filename).suffix or ".jpg"
         
-        temp_dir = UPLOAD_ROOT / "temp"
+        # 使用系統臨時目錄
+        import tempfile
+        temp_dir = Path(tempfile.gettempdir()) / "smartcloset_temp"
         temp_dir.mkdir(parents=True, exist_ok=True)
         temp_file_name = f"{safe_stem}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_temp{orig_ext}"
         temp_file_path = temp_dir / temp_file_name
@@ -203,78 +201,71 @@ async def upload_clothes(
             if analysis_result.get("style"):
                 style = analysis_result["style"]
         
-        # 5. 決定最終儲存位置
+        # 5. 上傳到 GCS (強制,不再支援本地儲存)
         try:
             cat_enum = CategoryEnum(category) if category in [e.value for e in CategoryEnum] else CategoryEnum.TOP
         except:
             cat_enum = CategoryEnum.TOP
         
-        # ✅ 關鍵修改：統一的檔案儲存邏輯（帶 GCS fallback）
-        gcs_success = False
         print(f"\n{'='*60}")
         print(f"[上傳] 開始處理: {name or safe_stem}")
-        print(f"[配置] USE_GCS={USE_GCS}, BUCKET={GCS_BUCKET_NAME}")
+        print(f"[配置] GCS 模式 (強制), BUCKET={GCS_BUCKET_NAME}")
         print(f"{'='*60}")
         
-        if USE_GCS and GCS_BUCKET_NAME:
-            # 嘗試上傳到 GCS
-            try:
-                safe_cat = category.strip().replace("/", "_")
-                gcs_path = f"clothes/{safe_cat}/{safe_stem}{final_file_path.suffix}"
-                
-                # 讀取檔案內容為 bytes
-                with open(final_file_path, "rb") as f:
-                    file_bytes = f.read()
-                
-                # 決定 MIME type
-                ext = final_file_path.suffix.lower()
-                if ext == ".png":
-                    mime_type = "image/png"
-                elif ext in [".jpg", ".jpeg"]:
-                    mime_type = "image/jpeg"
-                elif ext == ".webp":
-                    mime_type = "image/webp"
-                else:
-                    mime_type = "image/jpeg"
-                
-                print(f"[GCS] 嘗試上傳至: {gcs_path}")
-                logger.info(f"嘗試上傳至 GCS: {gcs_path}")
-                gcs_url = upload_file_to_gcs(
-                    file_bytes=file_bytes,
-                    destination_blob_name=gcs_path,
-                    mime_type=mime_type,
-                    bucket_name=GCS_BUCKET_NAME,
-                    public=False
-                )
-                cover_url = gcs_url  # 使用 GCS URL
-                gcs_success = True
-                print(f"[成功] GCS 上傳成功: {cover_url}")
-                logger.info(f"✅ GCS 上傳成功: {cover_url}")
-            except Exception as gcs_error:
-                print(f"[警告] GCS 上傳失敗: {gcs_error}")
-                print(f"[備案] 將使用本地儲存")
-                logger.warning(f"⚠️ GCS 上傳失敗，fallback 到本地儲存: {gcs_error}")
-                gcs_success = False
+        if not GCS_BUCKET_NAME:
+            raise HTTPException(status_code=500, detail="GCS_BUCKET_NAME 未設定，無法上傳圖片")
         
-        # 如果 GCS 失敗或未啟用，儲存到本地
-        if not gcs_success:
-            safe_cat = category.strip().replace("/", "_")
-            dest_dir = UPLOAD_ROOT / safe_cat
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            
-            final_ext = final_file_path.suffix
-            candidate = f"{safe_stem}{final_ext}"
-            save_path = dest_dir / candidate
-            
-            if save_path.exists():
-                stamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
-                candidate = f"{safe_stem}_{stamp}{final_ext}"
-                save_path = dest_dir / candidate
-            
-            shutil.move(str(final_file_path), str(save_path))
-            cover_url = f"/uploads/{safe_cat}/{candidate}"
-            print(f"[本地] 儲存成功: {cover_url}")
-            logger.info(f"✅ 本地儲存成功: {cover_url}")
+        # 準備 GCS 路徑: wardrobe/{user_id}/{category}/{filename}
+        user_id_str = str(current_user.id)
+        
+        # 類別映射到 GCS 路徑
+        category_gcs_map = {
+            "上衣": "tops",
+            "裙子": "skirts", 
+            "褲子": "bottoms",
+            "洋裝": "dresses",
+            "外套": "outerwear",
+            "鞋子": "shoes",
+            "帽子": "hats",
+            "包包": "bags",
+            "配件": "accessories",
+        }
+        category_gcs = category_gcs_map.get(category, "tops")
+        
+        gcs_path = f"wardrobe/{user_id_str}/{category_gcs}/{safe_stem}{final_file_path.suffix}"
+        
+        # 讀取檔案內容為 bytes
+        with open(final_file_path, "rb") as f:
+            file_bytes = f.read()
+        
+        # 決定 MIME type
+        ext = final_file_path.suffix.lower()
+        if ext == ".png":
+            mime_type = "image/png"
+        elif ext in [".jpg", ".jpeg"]:
+            mime_type = "image/jpeg"
+        elif ext == ".webp":
+            mime_type = "image/webp"
+        else:
+            mime_type = "image/jpeg"
+        
+        print(f"[GCS] 上傳至: gs://{GCS_BUCKET_NAME}/{gcs_path}")
+        logger.info(f"上傳至 GCS: gs://{GCS_BUCKET_NAME}/{gcs_path}")
+        
+        try:
+            cover_url = upload_file_to_gcs(
+                file_bytes=file_bytes,
+                destination_blob_name=gcs_path,
+                mime_type=mime_type,
+                bucket_name=GCS_BUCKET_NAME,
+                public=False,
+            )
+            print(f"[成功] GCS 上傳成功: {cover_url}")
+            logger.info(f"✅ GCS 上傳成功: {cover_url}")
+        except Exception as gcs_error:
+            print(f"[錯誤] GCS 上傳失敗: {gcs_error}")
+            logger.error(f"❌ GCS 上傳失敗: {gcs_error}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"圖片上傳失敗: {str(gcs_error)}")
         
         # 6. 建立資料庫記錄
         item = WardrobeItem(
@@ -651,16 +642,29 @@ def delete_clothes_item(
         if is_admin and item.user_id != current_user.id:
             logger.info(f"管理員 {current_user.id} 刪除了使用者 {item.user_id} 的衣物 {item_id}")
         
-        # 刪除圖片檔案（僅本地檔案）
-        img_path = item.cover_image_url
-        if img_path and img_path.startswith("/uploads/"):
-            abs_path = Path(img_path.lstrip("/"))
-            try:
-                if abs_path.exists():
-                    abs_path.unlink()
-                    logger.info(f"已刪除圖片: {abs_path}")
-            except Exception as e:
-                logger.warning(f"刪除圖片失敗: {e}")
+        # 刪除 GCS 圖片檔案
+        img_uri = item.cover_image_url
+        if img_uri:
+            if img_uri.startswith("gs://"):
+                # 刪除 GCS 檔案
+                try:
+                    from app.services.storage import delete_file_from_gcs
+                    success = delete_file_from_gcs(img_uri)
+                    if success:
+                        logger.info(f"✅ 已刪除 GCS 圖片: {img_uri}")
+                    else:
+                        logger.warning(f"⚠️ GCS 圖片刪除失敗或不存在: {img_uri}")
+                except Exception as e:
+                    logger.warning(f"⚠️ 刪除 GCS 圖片時發生錯誤: {e}")
+            elif img_uri.startswith("/uploads/"):
+                # 舊資料的本地檔案 (向下相容)
+                abs_path = Path(img_uri.lstrip("/"))
+                try:
+                    if abs_path.exists():
+                        abs_path.unlink()
+                        logger.info(f"✅ 已刪除本地圖片: {abs_path}")
+                except Exception as e:
+                    logger.warning(f"⚠️ 刪除本地圖片失敗: {e}")
         
         db.delete(item)
         db.commit()

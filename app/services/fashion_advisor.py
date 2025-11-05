@@ -105,17 +105,21 @@ class FashionAdvisor:
         "accessories": "accessories",
     }
     
-    # 這個目錄映射用於從 'uploads' 中找到原始圖片的路徑
-    CATEGORY_DIR_MAP = {
+    # GCS 路徑類別映射 (移除本地目錄映射)
+    GCS_CATEGORY_MAP = {
         "tops": "tops",
-        "bottoms": "pants", # 假設褲子和裙子都放在 'pants' 目錄下
-        "shoes": "shoes",
+        "bottoms": "bottoms",
+        "pants": "bottoms",
+        "skirts": "bottoms",
+        "dresses": "dresses",
         "outerwear": "outerwear",
-        "accessories": "bags",
+        "shoes": "shoes",
+        "bags": "bags",
+        "accessories": "accessories",
     }
     
-    def __init__(self, wardrobe_root: str = "uploads"): # 假設圖片上傳到 'uploads'
-        self.wardrobe_root = wardrobe_root # <-- 修正了 U+00A0 字元
+    def __init__(self):
+        """初始化 FashionAdvisor，所有圖片從 GCS 讀取"""
         
         # --- 讀取環境變數 ---
         self.gcp_project_id = os.getenv("GCP_PROJECT_ID")
@@ -169,10 +173,7 @@ class FashionAdvisor:
             if not self.gcp_project_id:
                 logger.error("GCP_PROJECT_ID 未設定，GCS 客戶端無法初始化。")
 
-
-        if not os.path.exists(self.wardrobe_root):
-            logger.warning(f"'{self.wardrobe_root}' 目錄不存在，可能無法讀取衣物圖片。")
-        logger.info(f"FashionAdvisor 初始化完成，衣櫃根目錄: {self.wardrobe_root}")
+        logger.info(f"FashionAdvisor 初始化完成 (僅使用 GCS，不使用本地儲存)")
 
     
     

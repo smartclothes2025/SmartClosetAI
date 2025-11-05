@@ -41,29 +41,25 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 router = APIRouter()
 
-# 基礎資料夾
-UPLOAD_FOLDER = Path("uploads")
-UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
-
 # GCS 設定
 import os
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "smartclothes_wardrobe")
-SKIP_GCS_UPLOAD = os.getenv("SKIP_GCS_UPLOAD", "0").lower() in ("1", "true", "yes")
 
-# 類別對應與正規化
-CATEGORY_FOLDERS = {
-    "tops": "uploads/tops",
-    "dresses": "uploads/dresses",
-    "pants": "uploads/bottoms",
-    "skirts": "uploads/bottoms",
-    "outerwear": "uploads/outerwear",
-    "shoes": "uploads/shoes",
-    "bags": "uploads/bags",
-    "hats": "uploads/hats",
-    "socks": "uploads/socks",
-    "accessories": "uploads/accessories",
-    "special": "uploads/special",
+# 類別映射（僅用於 GCS 路徑）
+GCS_CATEGORY_MAP = {
+    "tops": "tops",
+    "dresses": "dresses",
+    "pants": "bottoms",
+    "skirts": "bottoms",
+    "outerwear": "outerwear",
+    "shoes": "shoes",
+    "bags": "bags",
+    "hats": "hats",
+    "socks": "socks",
+    "accessories": "accessories",
+    "special": "special",
 }
+
 # 前端英文值到資料庫中文值的映射
 CATEGORY_NORMALIZE = {
     "tops": "上衣",
@@ -88,8 +84,6 @@ CATEGORY_NORMALIZE = {
     "包包": "包包",
     "配件": "配件",
 }
-for folder in CATEGORY_FOLDERS.values():
-    Path(folder).mkdir(parents=True, exist_ok=True)
 
 
 def _pop_like(d: dict, candidates: List[str]) -> str:
@@ -104,17 +98,6 @@ def _pop_like(d: dict, candidates: List[str]) -> str:
             v = d.pop(original_k)
             return str(v).strip() if v is not None else ""
     return ""
-
-
-def _get_dest_folder(category_val: str) -> Path:
-    """依分類決定儲存資料夾"""
-    if category_val in CATEGORY_FOLDERS:
-        return Path(CATEGORY_FOLDERS[category_val])
-    if category_val in ["pants", "skirts"]:
-        return Path(CATEGORY_FOLDERS["pants"])
-    if category_val in ["dresses", "tops"]:
-        return Path(CATEGORY_FOLDERS["tops"])
-    return UPLOAD_FOLDER
 
 
 @router.post("/")
@@ -165,9 +148,9 @@ async def upload_image(
     tags_list = [str(t) for t in tags_list if t is not None]
 
     # 類別正規化
-    # 先取得英文 category 用於檔案儲存路徑
+    # 先取得英文 category 用於 GCS 路徑
     category_input = category.strip() if isinstance(category, str) else ""
-    allowed_categories = set(CATEGORY_FOLDERS.keys())
+    allowed_categories = set(GCS_CATEGORY_MAP.keys())
     
     # 如果輸入是中文，先反向查找對應的英文 key
     category_en = category_input
@@ -180,6 +163,9 @@ async def upload_image(
     
     if category_en not in allowed_categories:
         category_en = "tops"
+    
+    # 轉換為資料庫使用的 GCS 路徑類別 (可能是 bottoms 而非 pants/skirts)
+    category_gcs = GCS_CATEGORY_MAP.get(category_en, "tops")
     
     # 轉換為中文用於資料庫
     category_db = CATEGORY_NORMALIZE.get(category_en, "上衣")
@@ -242,20 +228,20 @@ async def upload_image(
         base_filename = f"{final_stem}{final_ext}"
         unique_filename = base_filename
         
-        # 上傳到 GCS（必須啟用）
+        # 上傳到 GCS（必須啟用，不允許本地上傳）
         gcs_uri = None # gs:// 格式，用於 DB 儲存
         gcs_signed_url = None # http(s):// 格式，用於 API 返回
         
         if not HAS_GCS:
             raise HTTPException(status_code=500, detail="GCS 服務未啟用，無法上傳圖片")
         
-        if SKIP_GCS_UPLOAD:
-            raise HTTPException(status_code=500, detail="GCS 上傳已被停用，請檢查環境變數設定")
-        
         # ✅ 檢查檔案是否存在，如果存在就加上數字後綴
-        user_folder = f"wardrobe/{user_id_str}/{category_en}"
+        # 路徑格式: wardrobe/user_id/tops/檔名.jpg
+        user_folder = f"wardrobe/{user_id_str}/{category_gcs}"
         base_gcs_path = f"{user_folder}/{base_filename}"
         gcs_blob_path = base_gcs_path
+        
+        logging.info(f"[upload] 📁 GCS 路徑將為: gs://{GCS_BUCKET_NAME}/{gcs_blob_path}")
         
         try:
             from google.cloud import storage as gcs_storage
@@ -319,16 +305,31 @@ async def upload_image(
 
         if str(ai_detect).lower() in ("1", "true", "yes") and HAS_GEMINI:
             try:
-                ai_detected_data = gemini_classify_image(str(save_path))
-                # ... (略過 AI 建議覆蓋邏輯) ...
-                ai_cat = (ai_detected_data or {}).get("category")
-                if ai_cat and (local_category in {"tops", "special"}):
-                     local_category = ai_cat
-                if not color_val:
-                     colors = (ai_detected_data or {}).get("colors", [])
-                     color_val = colors[0] if colors else ""
-                if not style_val:
-                     style_val = (ai_detected_data or {}).get("style") or ""
+                # 為 AI 分析創建臨時檔案
+                import uuid as _uuid_ai
+                temp_dir = Path("temp_analysis")
+                temp_dir.mkdir(exist_ok=True)
+                temp_file = temp_dir / f"ai_{_uuid_ai.uuid4().hex}{final_ext}"
+                with open(temp_file, "wb") as f:
+                    f.write(final_contents)
+                
+                try:
+                    ai_detected_data = gemini_classify_image(str(temp_file))
+                    # ... (略過 AI 建議覆蓋邏輯) ...
+                    ai_cat = (ai_detected_data or {}).get("category")
+                    if ai_cat and (local_category in {"tops", "special"}):
+                         local_category = ai_cat
+                    if not color_val:
+                         colors = (ai_detected_data or {}).get("colors", [])
+                         color_val = colors[0] if colors else ""
+                    if not style_val:
+                         style_val = (ai_detected_data or {}).get("style") or ""
+                finally:
+                    # 清理臨時檔案
+                    try:
+                        temp_file.unlink(missing_ok=True)
+                    except Exception as e:
+                        logging.warning(f"[upload] 刪除臨時 AI 分析檔案失敗：{e}")
 
             except Exception as e:
                 logging.warning(f"[upload] Gemini 分析失敗，忽略 AI：{e}")

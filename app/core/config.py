@@ -26,8 +26,8 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY")
     GOOGLE_API_KEY: Optional[str] = os.getenv("GOOGLE_API_KEY")
     
-    # 文件上傳設置
-    UPLOAD_FOLDER: str = "uploaded_images"
+    # GCS 設置 (取代本地上傳)
+    GCS_BUCKET_NAME: str = os.getenv("GCS_BUCKET_NAME", "smartclothes_wardrobe")
     MAX_UPLOAD_SIZE: int = 5 * 1024 * 1024  # 5MB
     
     class Config:

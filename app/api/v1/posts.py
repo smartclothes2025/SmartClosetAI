@@ -150,28 +150,23 @@ async def create_post(
             mime = "image/webp"
 
         # 上傳 GCS（私有，前端以簽名網址讀）
-        # 開發時可用 SKIP_GCS_UPLOAD=1 跳過實際上傳（以便在本機測試 UI）
-        if os.getenv("SKIP_GCS_UPLOAD", "0") == "1":
-            logger.warning("SKIP_GCS_UPLOAD active - not uploading to GCS")
-            gcs_uri = f"gs://{GCS_BUCKET_POST}/dev-placeholder.jpg"
-            https_url = f"https://storage.googleapis.com/{GCS_BUCKET_POST}/dev-placeholder.jpg"
-        else:
-            try:
-                gcs_uri = upload_file_to_gcs_from_bytes(
-                    file_bytes=file_bytes,
-                    destination_blob_name=object_name,
-                    mime_type=mime,
-                    bucket_name=GCS_BUCKET_POST,
-                    public=False,
-                )
-                https_url = _https_from_gcs(gcs_uri)
-            except Exception as e:
-                logger.exception("GCS upload or signed URL generation failed")
-                # 在開發環境回傳詳細錯誤以便除錯；正式環境回傳簡短訊息
-                if os.getenv("ENV", "development") == "development":
-                    raise HTTPException(status_code=500, detail=f"GCS failure: {e}")
-                else:
-                    raise HTTPException(status_code=500, detail="建立貼文失敗（儲存媒體）")
+        # ❌ 不再支援 SKIP_GCS_UPLOAD，所有圖片必須上傳到 GCS
+        try:
+            gcs_uri = upload_file_to_gcs_from_bytes(
+                file_bytes=file_bytes,
+                destination_blob_name=object_name,
+                mime_type=mime,
+                bucket_name=GCS_BUCKET_POST,
+                public=False,
+            )
+            https_url = _https_from_gcs(gcs_uri)
+        except Exception as e:
+            logger.exception("GCS upload or signed URL generation failed")
+            # 在開發環境回傳詳細錯誤以便除錯；正式環境回傳簡短訊息
+            if os.getenv("ENV", "development") == "development":
+                raise HTTPException(status_code=500, detail=f"GCS failure: {e}")
+            else:
+                raise HTTPException(status_code=500, detail="建立貼文失敗（儲存媒體）")
 
         vis = (visibility or "public").strip().lower()
         if vis not in ALLOWED_VISIBILITY:
