@@ -1,9 +1,13 @@
-# app/api/v1/chat.py
-from fastapi import APIRouter, HTTPException, Body
-# 確保您的 app.services.fashion_advisor 導入路徑正確
+#app/api/v1/chat.py
+from fastapi import APIRouter, HTTPException, Body, Depends, Request
 from app.services.fashion_advisor import FashionAdvisor
-from typing import Dict, Any, Union
+from typing import Dict, Any, Union, Optional
 import logging 
+from app.models.auth import User
+from app.core.db import get_db
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+import uuid as _uuid
 
 # 配置日誌
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -13,74 +17,100 @@ router = APIRouter()
 
 # 嘗試初始化 Advisor，如果失敗會記錄錯誤
 try:
-    # 假設 FashionAdvisor 不需要參數，或者使用 .env 讀取
     advisor = FashionAdvisor()
     logger.info("FashionAdvisor 初始化成功。")
 except Exception as e:
     logger.error(f"初始化 FashionAdvisor 失敗: {e}", exc_info=True)
     advisor = None
+    
+    
+    
 
 @router.get("/ping")
 def ping():
     logger.info("收到 /ping 請求")
     return {"message": "pong"}
 
+class ChatRequest(BaseModel):
+    user_input: str
+    user_image_data: Optional[str] = None # 根據您的需求添加其他欄位
+
 @router.post("/")
-def get_outfit_recommendation(payload: Dict[str, str] = Body(...)) -> Dict[str, Any]:
+def get_outfit_recommendation(
+    payload: ChatRequest,
+    request: Request,
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
     """
     根據使用者輸入自由文字，自動推薦穿搭，並直接返回影像 URL 或文字。
     """
-    logger.info(f"收到 / 請求，payload: {payload}")
+    # 自行處理認證邏輯
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token 無效")
+    
+    token = auth_header.split(" ", 1)[1]
+    prefix = "user-"
+    suffix = "-token"
+    
+    if not (isinstance(token, str) and token.startswith(prefix) and token.endswith(suffix)):
+        raise HTTPException(status_code=401, detail="Token 無效")
+    
+    user_id_str = token[len(prefix):-len(suffix)] if len(token) > (len(prefix) + len(suffix)) else ""
+    
+    # 驗證 UUID 格式
+    try:
+        _uuid.UUID(user_id_str)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Token 無效")
+    
+    # 查詢使用者
+    current_user = db.query(User).filter(User.id == user_id_str).first()
+    if not current_user:
+        raise HTTPException(status_code=404, detail="使用者不存在")
+    
+    user_id = str(current_user.id)
+    logger.info(f"收到 / 請求，User ID: {user_id}, Payload: {payload}")
     
     if advisor is None:
         logger.error("FashionAdvisor 未成功初始化，無法處理請求。")
         raise HTTPException(status_code=500, detail="服務器內部錯誤：Advisor 未初始化")
         
-    user_input = payload.get("user_input")
-    user_image_data = payload.get("user_image_data") # 假設前端可能會傳來圖片
+    user_input = payload.user_input
+    user_image_data = payload.user_image_data
 
     if not user_input:
         logger.error("缺少 user_input")
         raise HTTPException(status_code=400, detail="缺少 user_input")
         
     try:
-        wardrobe_items = advisor.get_wardrobe_items()
-        # 判斷是否為穿搭請求
-        is_outfit_req = advisor.is_outfit_request(user_input)
-        
-        if is_outfit_req:
-            # 呼叫原有的處理函式來生成圖片或回退到文字
-            result = advisor.process_user_input(user_input, user_image_data)
-        else:
-            # 如果不是穿搭請求，直接呼叫聊天函式
-            result = advisor.chat_with_gemini(user_input, wardrobe_items)
+        result = advisor.process_user_input(
+            user_id=user_id,                          # 傳入從依賴注入中獲取的 user_id
+            user_input=user_input, 
+            user_image_data=user_image_data
+        )
             
         logger.info(f"Advisor 返回結果: {result}")
         
-        # --- 這是修正後的檢查邏輯 ---
+        # --- 返回結果檢查邏輯 (保持不變) ---
 
-        # 檢查基本格式是否為字典，以及是否有 'type' 鍵
         if not isinstance(result, dict) or "type" not in result:
             logger.error(f"FashionAdvisor 返回了未知格式的結果: {result}")
             raise HTTPException(status_code=500, detail="服務器內部錯誤: FashionAdvisor 返回格式異常")
 
         # 情況一：成功生成圖片
-        # FashionAdvisor 回傳: {"type": "image", "url": "...", "text": "..."}
         if result["type"] == "image":
             if "url" in result and "text" in result:
                 logger.info(f"FashionAdvisor 判斷為影像回應，URL: {result['url']}")
-                # 這個格式已經很完美，直接回傳給前端
                 return result
             else:
                 logger.error(f"FashionAdvisor 回應類型為 image，但缺少 'url' 或 'text': {result}")
                 raise HTTPException(status_code=500, detail="服務器內部錯誤: 影像回應格式不完整")
                 
-        # 情況二：純文字回應 (包含一般聊天或錯誤訊息)
-        # FashionAdvisor 回傳: {"type": "text", "text": "..."}
+        # 情況二：純文字回應
         elif result["type"] == "text":
             if "text" in result:
                 logger.info("FashionAdvisor 判斷為文字回應。")
-                # 這個格式也很好，直接回傳
                 return result
             else:
                 logger.error(f"FashionAdvisor 回應類型為 text，但缺少 'text': {result}")

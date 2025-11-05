@@ -226,19 +226,100 @@ async def create_post(
 def list_posts(
     limit: int = 20,
     scope: str = Query("mine", enum=["mine", "all"]),
+    visibility: Optional[str] = Query(None, enum=["public", "friends", "private"]),
     db: Session = Depends(get_db),
-    current_user=Depends(current_user_from_header),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
 ):
-    """列出自己的貼文（一般使用者）或全站（admin 使用 `scope=all`）。"""
+    """
+    列出貼文。
+    - scope=mine: 只列出自己的貼文（需要登入）
+    - scope=all: 列出全站貼文（admin 專用，需要登入）
+    - visibility=public: 列出所有公開貼文（不需要登入）
+    """
     try:
-        role = str(getattr(current_user, "role", "") or "").lower()
-        is_admin = role == "admin"
-        if scope == "all" and is_admin:
-            sql = text("SELECT * FROM user_post ORDER BY created_at DESC LIMIT :limit")
+        # ✅ 如果指定 visibility=public，不需要登入即可查看
+        if visibility == "public":
+            sql = text("""
+                SELECT 
+                    p.*,
+                    u.display_name,
+                    u.email,
+                    u.avatar_url
+                FROM user_post p
+                LEFT JOIN app_users u ON p.user_id = u.id
+                WHERE p.visibility = 'public' 
+                ORDER BY p.created_at DESC 
+                LIMIT :limit
+            """)
             params = {"limit": limit}
         else:
-            sql = text("SELECT * FROM user_post WHERE user_id = :uid ORDER BY created_at DESC LIMIT :limit")
-            params = {"uid": getattr(current_user, "id", None), "limit": limit}
+            # 需要登入的情況
+            if not credentials or not credentials.credentials:
+                raise HTTPException(status_code=401, detail="未提供 Authorization Bearer")
+            
+            current_user = current_user_from_header(credentials, db)
+            role = str(getattr(current_user, "role", "") or "").lower()
+            is_admin = role == "admin"
+            
+            if scope == "all" and is_admin:
+                # Admin 查看全站
+                if visibility:
+                    sql = text("""
+                        SELECT 
+                            p.*,
+                            u.display_name,
+                            u.email,
+                            u.avatar_url
+                        FROM user_post p
+                        LEFT JOIN app_users u ON p.user_id = u.id
+                        WHERE p.visibility = :visibility 
+                        ORDER BY p.created_at DESC 
+                        LIMIT :limit
+                    """)
+                    params = {"visibility": visibility, "limit": limit}
+                else:
+                    sql = text("""
+                        SELECT 
+                            p.*,
+                            u.display_name,
+                            u.email,
+                            u.avatar_url
+                        FROM user_post p
+                        LEFT JOIN app_users u ON p.user_id = u.id
+                        ORDER BY p.created_at DESC 
+                        LIMIT :limit
+                    """)
+                    params = {"limit": limit}
+            else:
+                # 一般使用者查看自己的貼文
+                if visibility:
+                    sql = text("""
+                        SELECT 
+                            p.*,
+                            u.display_name,
+                            u.email,
+                            u.avatar_url
+                        FROM user_post p
+                        LEFT JOIN app_users u ON p.user_id = u.id
+                        WHERE p.user_id = :uid AND p.visibility = :visibility 
+                        ORDER BY p.created_at DESC 
+                        LIMIT :limit
+                    """)
+                    params = {"uid": getattr(current_user, "id", None), "visibility": visibility, "limit": limit}
+                else:
+                    sql = text("""
+                        SELECT 
+                            p.*,
+                            u.display_name,
+                            u.email,
+                            u.avatar_url
+                        FROM user_post p
+                        LEFT JOIN app_users u ON p.user_id = u.id
+                        WHERE p.user_id = :uid 
+                        ORDER BY p.created_at DESC 
+                        LIMIT :limit
+                    """)
+                    params = {"uid": getattr(current_user, "id", None), "limit": limit}
 
         rows = db.execute(sql, params).mappings().all()
         res: List[Dict[str, Any]] = []
@@ -254,6 +335,8 @@ def list_posts(
                 pass
             res.append(item)
         return res
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("list_posts failed")
         raise HTTPException(status_code=500, detail="讀取貼文失敗")
@@ -267,7 +350,18 @@ def get_post(
 ):
     """讀取單一貼文。"""
     try:
-        row = db.execute(text("SELECT * FROM user_post WHERE id = :id"), {"id": post_id}).mappings().first()
+        # ✅ 加入 JOIN 查詢，同時獲取使用者資訊
+        sql = text("""
+            SELECT 
+                p.*,
+                u.display_name,
+                u.email,
+                u.avatar_url
+            FROM user_post p
+            LEFT JOIN app_users u ON p.user_id = u.id
+            WHERE p.id = :id
+        """)
+        row = db.execute(sql, {"id": post_id}).mappings().first()
         if not row:
             raise HTTPException(status_code=404, detail="找不到該貼文")
         item = dict(row)
