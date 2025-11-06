@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>虛擬試衣 API 測試工具</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+        
+        .content {
+            padding: 40px;
+        }
+        
+        .test-section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+        }
+        
+        .test-section h2 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 1.5em;
+        }
+        
+        .input-group {
+            margin-bottom: 15px;
+        }
+        
+        .input-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .input-group input,
+        .input-group textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        
+        .input-group input:focus,
+        .input-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .input-group textarea {
+            min-height: 100px;
+            resize: vertical;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .btn {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+            margin-left: 10px;
+        }
+        
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+        
+        .result-box {
+            margin-top: 20px;
+            padding: 20px;
+            border-radius: 8px;
+            display: none;
+        }
+        
+        .result-box.success {
+            background: #d4edda;
+            border: 2px solid #c3e6cb;
+            color: #155724;
+        }
+        
+        .result-box.error {
+            background: #f8d7da;
+            border: 2px solid #f5c6cb;
+            color: #721c24;
+        }
+        
+        .result-box.info {
+            background: #d1ecf1;
+            border: 2px solid #bee5eb;
+            color: #0c5460;
+        }
+        
+        .result-box h3 {
+            margin-bottom: 10px;
+            font-size: 1.2em;
+        }
+        
+        .result-box pre {
+            background: rgba(0,0,0,0.05);
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            font-size: 12px;
+            white-space: pre-wrap;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+        
+        .status-indicator.green {
+            background: #28a745;
+        }
+        
+        .status-indicator.red {
+            background: #dc3545;
+        }
+        
+        .status-indicator.yellow {
+            background: #ffc107;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🧥 虛擬試衣 API 測試工具</h1>
+            <p>快速測試和診斷 SmartCloset AI 虛擬試衣功能</p>
+        </div>
+        
+        <div class="content">
+            <!-- 配置檢查 -->
+            <div class="test-section">
+                <h2>📋 配置狀態檢查</h2>
+                <p style="margin-bottom: 15px;">點擊按鈕檢查當前配置狀態</p>
+                <button class="btn btn-primary" onclick="checkConfig()">
+                    檢查配置
+                </button>
+                <div id="configResult" class="result-box"></div>
+            </div>
+            
+            <!-- API 測試 -->
+            <div class="test-section">
+                <h2>🚀 API 端點測試</h2>
+                
+                <div class="input-group">
+                    <label for="apiUrl">API URL</label>
+                    <input 
+                        type="text" 
+                        id="apiUrl" 
+                        value="http://127.0.0.1:8000/api/v1/fitting/generate"
+                        placeholder="輸入 API 完整 URL"
+                    >
+                    <small style="color: #666;">✅ 正確: /api/v1/fitting/generate | ❌ 錯誤: /api/v1/api/v1/fitting/generate</small>
+                </div>
+                
+                <div class="input-group">
+                    <label for="userInput">使用者輸入</label>
+                    <input 
+                        type="text" 
+                        id="userInput" 
+                        value="休閒日常穿搭"
+                        placeholder="例如：休閒日常穿搭"
+                    >
+                </div>
+                
+                <div class="input-group">
+                    <label for="requestBody">請求 Body (JSON)</label>
+                    <textarea id="requestBody">{
+  "user_input": "休閒日常穿搭",
+  "selected_items": [
+    {
+      "id": 1,
+      "name": "白色T恤",
+      "category": "上衣",
+      "img": null
+    },
+    {
+      "id": 2,
+      "name": "牛仔褲",
+      "category": "褲子",
+      "img": null
+    }
+  ],
+  "user_photo": null,
+  "body_metrics": null
+}</textarea>
+                </div>
+                
+                <button class="btn btn-primary" onclick="testAPI()">
+                    <span id="testBtnText">發送測試請求</span>
+                </button>
+                <button class="btn btn-secondary" onclick="resetTest()">
+                    重置
+                </button>
+                
+                <div id="apiResult" class="result-box"></div>
+            </div>
+            
+            <!-- URL 診斷 -->
+            <div class="test-section">
+                <h2>🔍 URL 路徑診斷</h2>
+                <p style="margin-bottom: 15px;">輸入你的 API 調用代碼，自動檢查是否有路徑重複問題</p>
+                
+                <div class="input-group">
+                    <label for="codeSnippet">前端代碼片段</label>
+                    <textarea id="codeSnippet" placeholder="例如：
+const API_BASE = 'http://127.0.0.1:8000/api/v1';
+fetch(`${API_BASE}/fitting/generate`, ...)"></textarea>
+                </div>
+                
+                <button class="btn btn-primary" onclick="diagnoseURL()">
+                    診斷 URL
+                </button>
+                
+                <div id="diagnoseResult" class="result-box"></div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // 檢查配置
+        async function checkConfig() {
+            const resultDiv = document.getElementById('configResult');
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'result-box info';
+            resultDiv.innerHTML = '<h3>檢查中...</h3>';
+            
+            try {
+                // 嘗試連接後端
+                const response = await fetch('http://127.0.0.1:8000/api/v1/ping-db');
+                
+                if (response.ok) {
+                    resultDiv.className = 'result-box success';
+                    resultDiv.innerHTML = `
+                        <h3><span class="status-indicator green"></span>後端服務運行正常</h3>
+                        <p>✅ 後端服務已啟動</p>
+                        <p>✅ API 路由可訪問</p>
+                        <p>⚠️ 請確保前端調用的 URL 路徑正確（不要重複 /api/v1）</p>
+                    `;
+                } else {
+                    throw new Error('後端響應異常');
+                }
+            } catch (error) {
+                resultDiv.className = 'result-box error';
+                resultDiv.innerHTML = `
+                    <h3><span class="status-indicator red"></span>無法連接到後端服務</h3>
+                    <p>❌ 錯誤: ${error.message}</p>
+                    <p>請檢查：</p>
+                    <ul>
+                        <li>後端服務是否正在運行？</li>
+                        <li>服務地址是否正確？</li>
+                        <li>防火牆是否阻擋了連接？</li>
+                    </ul>
+                `;
+            }
+        }
+        
+        // 測試 API
+        async function testAPI() {
+            const apiUrl = document.getElementById('apiUrl').value;
+            const requestBody = document.getElementById('requestBody').value;
+            const resultDiv = document.getElementById('apiResult');
+            const btnText = document.getElementById('testBtnText');
+            
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'result-box info';
+            resultDiv.innerHTML = '<h3>請求中...</h3>';
+            btnText.innerHTML = '<span class="loading"></span> 處理中...';
+            
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: requestBody
+                });
+                
+                const data = await response.json();
+                
+                if (response.status === 404) {
+                    resultDiv.className = 'result-box error';
+                    resultDiv.innerHTML = `
+                        <h3><span class="status-indicator red"></span>404 Not Found</h3>
+                        <p><strong>錯誤：</strong>API 路徑不存在</p>
+                        <p><strong>可能原因：</strong></p>
+                        <ul>
+                            <li>URL 路徑重複了 /api/v1</li>
+                            <li>檢查你的 URL: <code>${apiUrl}</code></li>
+                            <li>應該是: <code>http://127.0.0.1:8000/api/v1/fitting/generate</code></li>
+                        </ul>
+                        <pre>${JSON.stringify(data, null, 2)}</pre>
+                    `;
+                } else if (response.ok) {
+                    if (data.type === 'image') {
+                        resultDiv.className = 'result-box success';
+                        resultDiv.innerHTML = `
+                            <h3><span class="status-indicator green"></span>成功生成圖片</h3>
+                            <p><strong>類型：</strong>${data.type}</p>
+                            <p><strong>圖片 URL 長度：</strong>${data.url ? data.url.length : 0} 字元</p>
+                            <pre>${JSON.stringify(data, null, 2).substring(0, 500)}...</pre>
+                        `;
+                    } else if (data.type === 'text') {
+                        resultDiv.className = 'result-box info';
+                        resultDiv.innerHTML = `
+                            <h3><span class="status-indicator yellow"></span>返回文字說明</h3>
+                            <p><strong>類型：</strong>${data.type}</p>
+                            <p><strong>說明：</strong></p>
+                            <pre>${data.text}</pre>
+                            <p><strong>原因：</strong>AI 服務可能未完全配置（這是正常的）</p>
+                        `;
+                    }
+                } else {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+            } catch (error) {
+                resultDiv.className = 'result-box error';
+                resultDiv.innerHTML = `
+                    <h3><span class="status-indicator red"></span>請求失敗</h3>
+                    <p><strong>錯誤：</strong>${error.message}</p>
+                    <p>請檢查：</p>
+                    <ul>
+                        <li>後端服務是否運行</li>
+                        <li>URL 是否正確</li>
+                        <li>JSON 格式是否有效</li>
+                    </ul>
+                `;
+            } finally {
+                btnText.textContent = '發送測試請求';
+            }
+        }
+        
+        // 診斷 URL
+        function diagnoseURL() {
+            const code = document.getElementById('codeSnippet').value;
+            const resultDiv = document.getElementById('diagnoseResult');
+            resultDiv.style.display = 'block';
+            
+            const issues = [];
+            const suggestions = [];
+            
+            // 檢查重複的 /api/v1
+            if (code.includes('/api/v1/api/v1')) {
+                issues.push('發現重複的 /api/v1 路徑');
+                suggestions.push('移除其中一個 /api/v1');
+            }
+            
+            // 檢查 baseURL 和路徑組合
+            if (code.includes("baseURL") && code.includes("/api/v1") && code.includes("'/api/v1/fitting")) {
+                issues.push('baseURL 已包含 /api/v1，調用時不應再加 /api/v1');
+                suggestions.push("如果 baseURL 是 '/api/v1'，則調用時用 '/fitting/generate'");
+            }
+            
+            if (issues.length === 0) {
+                resultDiv.className = 'result-box success';
+                resultDiv.innerHTML = `
+                    <h3><span class="status-indicator green"></span>未發現明顯問題</h3>
+                    <p>代碼看起來正常，但請確保：</p>
+                    <ul>
+                        <li>實際運行時 URL 正確拼接</li>
+                        <li>檢查瀏覽器網絡標籤中的實際請求 URL</li>
+                    </ul>
+                `;
+            } else {
+                resultDiv.className = 'result-box error';
+                let html = `<h3><span class="status-indicator red"></span>發現 ${issues.length} 個問題</h3>`;
+                html += '<p><strong>問題：</strong></p><ul>';
+                issues.forEach(issue => html += `<li>${issue}</li>`);
+                html += '</ul><p><strong>建議：</strong></p><ul>';
+                suggestions.forEach(sug => html += `<li>${sug}</li>`);
+                html += '</ul>';
+                resultDiv.innerHTML = html;
+            }
+        }
+        
+        // 重置測試
+        function resetTest() {
+            document.getElementById('apiResult').style.display = 'none';
+            document.getElementById('apiUrl').value = 'http://127.0.0.1:8000/api/v1/fitting/generate';
+        }
+        
+        // 更新 user_input
+        document.getElementById('userInput').addEventListener('input', function() {
+            try {
+                const body = JSON.parse(document.getElementById('requestBody').value);
+                body.user_input = this.value;
+                document.getElementById('requestBody').value = JSON.stringify(body, null, 2);
+            } catch (e) {
+                // JSON 格式錯誤，忽略
+            }
+        });
+    </script>
+</body>
+</html>

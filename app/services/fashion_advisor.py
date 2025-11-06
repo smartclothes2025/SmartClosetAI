@@ -202,64 +202,7 @@ class FashionAdvisor:
             return None
         
         
-    # def _generate_imagen_prompt_with_gemini(self, wardrobe_items: List[ClothingItem], user_input: str) -> Optional[str]:
-    #     """
-    #     使用 Gemini 2.5 Flash 讀取衣物圖片，並生成高精度的 Imagen Prompt。
-    #     """
-    #     if not self.text_model or not self.gcs_client:
-    #         logger.error("Gemini 模型或 GCS 客戶端未初始化，無法生成 Prompt。")
-    #         return None
-        
-    #     # 1. 準備 Gemini 的內容列表 (Content Parts)
-    #     content_parts = []
-        
-    #     # 系統指令：要求 Gemini 觀察圖片並生成 Prompt
-    #     system_instruction = (
-    #         "你是一個專業的時尚分析師。請仔細觀察接下來提供的每一張衣物圖片，並結合使用者要求 ('"
-    #         f"{user_input}')，生成一個**單一、連續**且**極其細節化**的圖像生成 Prompt。"
-    #         "Prompt 必須清晰描述：模特兒穿著這些衣物後的**款式、材質、顏色深淺**，並要求**休閒、寫實、高畫質**的風格。"
-    #         "請勿在輸出中包含任何額外解釋或標點符號，只返回可直接用於 Imagen 的 Prompt 文字。"
-    #         "範例格式: A young woman wearing a slim-fit, crew-neck cotton white T-shirt, paired with light-wash, straight-leg denim jeans, with a slightly oversized black leather jacket, and white retro running sneakers. Outdoor setting, natural light, realistic photo."
-    #     )
-    #     content_parts.append(system_instruction)
-
-    #     # 2. 下載並添加衣物圖片
-    #     successful_items_desc = []
-    #     for item in wardrobe_items:
-    #         # 這裡假設 cover_image_url 是 GCS 的公開 URL
-    #         if item.cover_image_url and item.cover_image_url != "top1.png": # 排除模擬數據中的 'top1.png' 等
-    #             part = self._download_gcs_to_part(item.cover_image_url)
-    #             if part:
-    #                 content_parts.append(part)
-    #                 successful_items_desc.append(item.name)
-    #         else:
-    #              # 對於模擬數據，至少確保文字描述被納入考慮
-    #             successful_items_desc.append(item.name)
-
-    #     if len(content_parts) == 1: # 只有系統指令，沒有成功載入任何圖片
-    #          logger.warning("未能成功載入任何 GCS 圖片，將使用文字描述生成 Prompt。")
-    #          # 退回到純文字生成 Prompt (類似您原始的做法，但風格改為寫實)
-    #          outfit_prompt_part = ", ".join(successful_items_desc) if successful_items_desc else "時尚穿搭"
-    #          return f"A casual and realistic outfit for daily life featuring {outfit_prompt_part}, photographed outdoors on a sunny day, natural light, no heavy photo editing."
-
-
-    #     logger.info(f"呼叫 Gemini 2.5 Flash 讀取 {len(content_parts)-1} 張圖片並生成 Prompt...")
-        
-    #     try:
-    #         # 3. 呼叫 Gemini 2.5 Flash
-    #         response: GenerationResponse = self.text_model.generate_content(content_parts)
-    #         gemini_prompt = response.text.strip()
-            
-    #         if gemini_prompt:
-    #             logger.info(f"Gemini 生成的 Prompt (部分): {gemini_prompt[:100]}...")
-    #             return gemini_prompt
-    #         else:
-    #             logger.warning("Gemini 未能生成有效的 Prompt。")
-    #             return None
-    #     except Exception as e:
-    #         logger.error(f"呼叫 Gemini 進行 Prompt 生成失敗: {e}", exc_info=True)
-    #         return None
-        
+  
     def _fuse_outfit_images_with_gemini(self, wardrobe_items: List[ClothingItem], user_input: str) -> Optional[str]:
         """使用 Gemini 分析衣物圖片，再用 Imagen 生成穿搭圖."""
         
@@ -327,56 +270,7 @@ class FashionAdvisor:
             outfit_prompt = f"A realistic full-body photo of a young Taiwanese woman wearing {', '.join(item_descriptions)}. Natural outdoor setting, professional fashion photography."
             return self._call_image_generation_api_fallback(outfit_prompt)
         
-    #     if not self.image_model:
-    #         logger.error("Imagen 模型未初始化，無法生成圖片。")
-    #         return None
-
-    #     # 根據衣物清單構建 prompt
-    #     outfit_descriptions = [item.name for item in wardrobe_items if item.name]
-    #     outfit_prompt_part = ", ".join(outfit_descriptions) if outfit_descriptions else "時尚穿搭"
-        
-    #     # 構建適合圖片生成的 prompt
-    #     image_prompt = f"A stylish fashion outfit featuring {outfit_prompt_part}, professional fashion photography, clean background, high quality, realistic"
-        
-    #     logger.info(f"呼叫 Imagen 模型生成圖片，prompt: '{image_prompt}'")
-        
-    #     try:
-    #         # 使用 Imagen 生成圖片
-    #         response = self.image_model.generate_images(
-    #             prompt=image_prompt,
-    #             number_of_images=1,
-    #             aspect_ratio="1:1",
-    #             safety_filter_level="block_some",
-    #             person_generation="allow_adult"
-    #         )
-            
-    #         if response.images and len(response.images) > 0:
-    #             logger.info("Imagen 成功生成圖片")
-                
-    #             # 將圖片轉換為 bytes 並上傳到 GCS
-    #             image = response.images[0]
-                
-    #             # 將 PIL Image 轉換為 bytes
-    #             img_byte_arr = BytesIO()
-    #             image._pil_image.save(img_byte_arr, format='PNG')
-    #             image_bytes = img_byte_arr.getvalue()
-                
-    #             # 上傳到 GCS
-    #             public_url = self._upload_image_to_gcs(image_bytes, folder="generated_outfits")
-                
-    #             if public_url:
-    #                 logger.info(f"圖片已上傳到 GCS: {public_url}")
-    #                 return public_url
-    #             else:
-    #                 logger.error("圖片上傳到 GCS 失敗")
-    #                 return None
-    #         else:
-    #             logger.warning("Imagen 模型未返回圖片。")
-    #             return None
-
-    #     except Exception as e:
-    #         logger.error(f"呼叫 Imagen API 失敗: {e}", exc_info=True)
-    #         return None
+    
     
     def _call_image_generation_api_fallback(self, image_prompt: str) -> Optional[str]:
          """作為多圖融合失敗時的 Text-to-Image 備選方案"""
@@ -488,11 +382,9 @@ class FashionAdvisor:
     def _download_gcs_to_part(self, gcs_url: str) -> Optional[Part]:
         """從 GCS URL 下載圖片並轉換為 Vertex AI Part 對象。"""
         try:
-            # 修改：支援 https://storage.googleapis.com/ 格式的 URL，從 URL 提取 bucket 和 blob
             if gcs_url.startswith("https://storage.googleapis.com/"):
                 parts = gcs_url[len("https://storage.googleapis.com/"):].split('/', 1)
                 bucket_name = parts[0]
-                # 🔴 關鍵修正：URL 解碼 blob_name，避免二次編碼
                 blob_name = unquote(parts[1])
             else:
                 # 模擬數據或格式錯誤，無法處理
@@ -510,3 +402,79 @@ class FashionAdvisor:
         except Exception as e:
             logger.error(f"下載或轉換 GCS 圖片失敗: {gcs_url}, 錯誤: {e}", exc_info=True)
             return None
+        
+        
+        
+        
+        
+    def _get_selected_clothing_items(self, user_id: str, selected_items: List[dict]) -> List[ClothingItem]:
+        """
+        根據前端傳入的精確 ID，從 GCS 檢查並獲取衣物的完整對象（包含 GCS URL）。
+        
+        ⚠️ 注意：由於您沒有提供資料庫層，我們這裡做一個簡化假設：
+        我們將嘗試用 selected_items 中的 ID/name/category 去 GCS 裡匹配，
+        但更嚴謹的做法是根據 item.id 從資料庫查詢完整的 ClothingItem 資訊，包括圖片 URL。
+        """
+        all_wardrobe_items = self.get_wardrobe_items(user_id) # 獲取所有衣物
+        selected_ids = {item.id for item in selected_items} # 假設前端傳入的 item 有 id 欄位
+
+        # 這裡由於 ClothingItemIn 沒有 cover_image_url，我們必須從所有衣櫃中匹配。
+        # 由於您沒有提供一個包含 URL 的 ClothingItemIn 類別，
+        # 這裡會創建一個新的 ClothingItem 列表，並嘗試在 GCS 獲取的清單中找到對應的 URL
+        
+        # 簡化匹配邏輯 (假設前端傳入的 name 和 category 足夠匹配)
+        # 由於您在 VirtualFitting.jsx 中使用的是 item.img，這裡需要調整前端傳輸內容，
+        # 或者假設 GCS 圖片名與 item.name 相關聯。
+        
+        # 為了讓後端能工作，我們修改邏輯：直接利用 get_wardrobe_items 的結果來篩選。
+        
+        final_items = []
+        for item_in in selected_items:
+            # 找到與 item_in 匹配的 GCS 上的真實衣物對象 (通常透過 ID)
+            matching_item = next((item for item in all_wardrobe_items if item.name == item_in.name and item.category == item_in.category), None)
+
+            if matching_item:
+                 final_items.append(matching_item)
+            else:
+                 # 如果找不到 GCS URL，至少保留其文字資訊，供 Gemini 參考
+                 final_items.append(ClothingItem(
+                     category=item_in.category,
+                     name=item_in.name,
+                     cover_image_url=None # 無圖片 URL
+                 ))
+                 
+        return final_items
+    
+    
+    
+    
+    
+    
+    def process_fitting_request(self, user_id: str, user_input: str, selected_items: List[dict]) -> Dict[str, Any]:
+        """
+        專門用於虛擬試衣頁面，根據精確選擇的衣物生成圖片。
+        """
+        logger.info(f"處理虛擬試衣生成請求：User ID: {user_id}, Items: {len(selected_items)}")
+        
+        # 1. 獲取選中衣物的完整資訊 (含 GCS URL)
+        wardrobe_items = self._get_selected_clothing_items(user_id, selected_items)
+        
+        if not wardrobe_items:
+            return {"type": "text", "text": "請先在衣櫃中選擇至少一件衣物。"}
+            
+        # 2. 呼叫核心的圖片生成邏輯 (多圖融合)
+        generated_image_url = self._fuse_outfit_images_with_gemini(
+            wardrobe_items=wardrobe_items, 
+            user_input=user_input
+        )
+        
+        # 3. 處理結果
+        if generated_image_url:
+            return {
+                "type": "image",
+                "url": generated_image_url,
+                "text": f"好的，這是根據您選中的 {len(wardrobe_items)} 件衣物生成的穿搭建議："
+            }
+        else:
+            # 如果圖片生成失敗，退回純文字建議
+            return self.chat_with_gemini(user_input, wardrobe_items)
