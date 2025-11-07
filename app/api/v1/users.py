@@ -1,11 +1,14 @@
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import Optional
 from pydantic import BaseModel
 from app.core.db import get_db
 from app.models.auth import User
+from app.services.storage import upload_file_to_gcs_from_bytes, generate_signed_url_from_gcs_uri
 import base64
+import uuid
+from pathlib import Path
 
 router = APIRouter()
 
@@ -18,6 +21,7 @@ class BodyMetricsUpdate(BaseModel):
     hip_cm: Optional[float] = None
     shoulder_cm: Optional[float] = None
     shoe_size: Optional[float] = None
+    sex: Optional[str] = None 
     recorded_at: Optional[str] = None
     display_name: Optional[str] = None
     interformation: Optional[str] = None
@@ -51,6 +55,7 @@ def _upsert_body_metrics(db: Session, params: dict):
         hip_cm = COALESCE(:hip_cm, hip_cm),
         shoulder_cm = COALESCE(:shoulder_cm, shoulder_cm),
         shoe_size = COALESCE(:shoe_size, shoe_size),
+        sex = COALESCE(:sex, sex),
         recorded_at = COALESCE(:recorded_at, recorded_at),
         display_name = COALESCE(:display_name, display_name)
     WHERE user_id = :user_id
@@ -60,8 +65,8 @@ def _upsert_body_metrics(db: Session, params: dict):
 
     insert_sql = text(
         """
-    INSERT INTO body_metrics (user_id, height_cm, weight_kg, chest_cm, waist_cm, hip_cm, shoulder_cm, shoe_size, recorded_at, display_name)
-    VALUES (:user_id, :height_cm, :weight_kg, :chest_cm, :waist_cm, :hip_cm, :shoulder_cm, :shoe_size, COALESCE(:recorded_at, now() at time zone 'utc'), :display_name)
+    INSERT INTO body_metrics (user_id, height_cm, weight_kg, chest_cm, waist_cm, hip_cm, shoulder_cm, shoe_size, sex, recorded_at, display_name)
+    VALUES (:user_id, :height_cm, :weight_kg, :chest_cm, :waist_cm, :hip_cm, :shoulder_cm, :shoe_size, :sex, COALESCE(:recorded_at, now() at time zone 'utc'), :display_name)
     RETURNING *;
     """
     )
@@ -164,6 +169,7 @@ def update_my_body_metrics(payload: BodyMetricsUpdate, authorization: Optional[s
         "hip_cm": payload.hip_cm,
         "shoulder_cm": payload.shoulder_cm,
         "shoe_size": payload.shoe_size,
+        "sex": payload.sex,  # 添加性別欄位
         "recorded_at": payload.recorded_at,
         # use the app_users.display_name as the canonical display name (possibly updated above)
         "display_name": current_display_name,
@@ -176,3 +182,111 @@ def update_my_body_metrics(payload: BodyMetricsUpdate, authorization: Optional[s
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"更新 body_metrics 失敗: {e}")
+
+
+@router.post("/me/profile-picture")
+@router.post("/me/picture")  # 別名路由，與前端相容
+async def upload_profile_picture(
+    file: UploadFile = File(...),
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+):
+    """
+    上傳使用者頭貼圖片到 GCS
+    - 圖片會儲存到: smartclothes_userphoto/{user_id}/{display_name}.jpg
+    - URL 會更新到 app_users.picture 欄位
+    """
+    user = _get_user_from_auth_header(authorization, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="需要授權")
+
+    user_id = str(user["id"])
+    display_name = user.get("display_name") or "user"
+    
+    # 驗證檔案類型
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="只接受圖片檔案")
+    
+    try:
+        # 讀取檔案內容
+        file_bytes = await file.read()
+        
+        # 取得檔案副檔名
+        file_extension = Path(file.filename).suffix if file.filename else ".jpg"
+        if not file_extension:
+            file_extension = ".jpg"
+        
+        # 構建 GCS 路徑: smartclothes_userphoto/{user_id}/{display_name}.jpg
+        filename = f"{display_name}{file_extension}"
+        gcs_path = f"smartclothes_userphoto/{user_id}/{filename}"
+        
+        # 上傳到 GCS
+        gcs_uri = upload_file_to_gcs_from_bytes(
+            file_bytes=file_bytes,
+            destination_blob_name=gcs_path,
+            mime_type=file.content_type,
+            bucket_name=None,  # 使用環境變數的 bucket
+            public=False  # 私有檔案，需要簽名 URL
+        )
+        
+        # 更新 app_users.picture 欄位
+        db.execute(
+            text("UPDATE app_users SET picture = :picture WHERE id = :user_id"),
+            {"picture": gcs_uri, "user_id": user_id}
+        )
+        db.commit()
+        
+        # 生成簽名 URL 回傳給前端
+        signed_url = generate_signed_url_from_gcs_uri(gcs_uri, expiration_minutes=60)
+        
+        return {
+            "success": True,
+            "message": "頭貼上傳成功",
+            "gcs_uri": gcs_uri,
+            "authenticated_url": signed_url,  # ✅ 與前端欄位名稱一致
+            "image_url": signed_url,  # ✅ 額外提供，與前端相容
+            "url": signed_url,
+            "path": gcs_path
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"上傳頭貼失敗: {str(e)}")
+
+
+@router.get("/me/profile-picture")
+@router.get("/me/picture")  # 別名路由，與前端相容
+def get_profile_picture(
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+):
+    """
+    取得使用者頭貼的簽名 URL
+    """
+    user = _get_user_from_auth_header(authorization, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="需要授權")
+    
+    picture_uri = user.get("picture")
+    
+    if not picture_uri:
+        return {
+            "has_picture": False,
+            "url": None,
+            "authenticated_url": None,
+            "image_url": None
+        }
+    
+    try:
+        # 生成簽名 URL
+        signed_url = generate_signed_url_from_gcs_uri(picture_uri, expiration_minutes=60)
+        
+        return {
+            "has_picture": True,
+            "url": signed_url,
+            "authenticated_url": signed_url,  # ✅ 與前端欄位名稱一致
+            "image_url": signed_url,  # ✅ 額外提供
+            "gcs_uri": picture_uri
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"取得頭貼失敗: {str(e)}")

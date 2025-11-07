@@ -16,7 +16,62 @@ router = APIRouter(tags=["搜尋"])
 
 def _https_from_gcs(gcs_uri: str) -> str:
     """將 GCS URI 轉換為簽名 HTTPS URL"""
-    return generate_signed_url_from_gcs_uri(gcs_uri, expiration_minutes=60)
+    if not gcs_uri:
+        return ""
+    try:
+        return generate_signed_url_from_gcs_uri(gcs_uri, expiration_minutes=60)
+    except Exception as e:
+        logger.warning(f"無法生成簽名 URL: {gcs_uri}, 錯誤: {e}")
+        return ""
+
+
+def _process_post_media(post_data: dict) -> dict:
+    """
+    統一處理貼文的媒體資料，將 GCS URI 轉換為可訪問的 HTTPS URL
+    """
+    # 處理 media 欄位（JSONB 陣列）
+    try:
+        media_raw = post_data.get("media")
+        
+        # 如果是字串，先解析為 JSON
+        if isinstance(media_raw, str):
+            media_parsed = json.loads(media_raw)
+        elif isinstance(media_raw, list):
+            media_parsed = media_raw
+        else:
+            media_parsed = []
+        
+        # 為每個媒體項目生成簽名 URL
+        for m in media_parsed:
+            if isinstance(m, dict):
+                gcs_uri = m.get("gcs_uri", "")
+                if gcs_uri and str(gcs_uri).startswith("gs://"):
+                    signed_url = _https_from_gcs(gcs_uri)
+                    if signed_url:
+                        m["url"] = signed_url
+                    else:
+                        logger.warning(f"無法為 {gcs_uri} 生成簽名 URL")
+                        m["url"] = ""
+        
+        post_data["media"] = media_parsed
+        
+        # 如果有媒體，設定封面圖片（取第一張）
+        if media_parsed and len(media_parsed) > 0:
+            first_media = media_parsed[0]
+            if isinstance(first_media, dict):
+                post_data["cover_image"] = first_media.get("url", "")
+                post_data["thumbnail"] = first_media.get("url", "")
+        else:
+            post_data["cover_image"] = ""
+            post_data["thumbnail"] = ""
+            
+    except Exception as e:
+        logger.warning(f"處理貼文媒體資料時發生錯誤: {e}")
+        post_data["media"] = []
+        post_data["cover_image"] = ""
+        post_data["thumbnail"] = ""
+    
+    return post_data
 
 
 @router.get("/posts")
@@ -93,18 +148,8 @@ def search_posts(
         results: List[Dict[str, Any]] = []
         for row in rows:
             item = dict(row)
-            
-            # 處理媒體檔案（將 GCS URI 轉換為簽名 URL）
-            try:
-                media_parsed = json.loads(item.get("media") or "[]")
-                for m in media_parsed:
-                    if isinstance(m, dict) and str(m.get("gcs_uri", "")).startswith("gs://"):
-                        m["url"] = _https_from_gcs(m["gcs_uri"])
-                item["media"] = media_parsed
-            except Exception as e:
-                logger.warning(f"處理媒體資料時發生錯誤: {e}")
-                item["media"] = []
-            
+            # 使用統一的媒體處理函數
+            item = _process_post_media(item)
             results.append(item)
         
         # 獲取總數（用於前端分頁）
@@ -188,18 +233,8 @@ def search_posts_by_tag(
         results: List[Dict[str, Any]] = []
         for row in rows:
             item = dict(row)
-            
-            # 處理媒體檔案
-            try:
-                media_parsed = json.loads(item.get("media") or "[]")
-                for m in media_parsed:
-                    if isinstance(m, dict) and str(m.get("gcs_uri", "")).startswith("gs://"):
-                        m["url"] = _https_from_gcs(m["gcs_uri"])
-                item["media"] = media_parsed
-            except Exception as e:
-                logger.warning(f"處理媒體資料時發生錯誤: {e}")
-                item["media"] = []
-            
+            # 使用統一的媒體處理函數
+            item = _process_post_media(item)
             results.append(item)
         
         # 獲取總數
@@ -266,18 +301,8 @@ def search_posts_by_user(
         results: List[Dict[str, Any]] = []
         for row in rows:
             item = dict(row)
-            
-            # 處理媒體檔案
-            try:
-                media_parsed = json.loads(item.get("media") or "[]")
-                for m in media_parsed:
-                    if isinstance(m, dict) and str(m.get("gcs_uri", "")).startswith("gs://"):
-                        m["url"] = _https_from_gcs(m["gcs_uri"])
-                item["media"] = media_parsed
-            except Exception as e:
-                logger.warning(f"處理媒體資料時發生錯誤: {e}")
-                item["media"] = []
-            
+            # 使用統一的媒體處理函數
+            item = _process_post_media(item)
             results.append(item)
         
         # 獲取總數
