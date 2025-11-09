@@ -107,7 +107,7 @@ def gemini_classify_image(image_path: str) -> dict:
 
 顏色選項：黑、白、灰、紅、粉、橘、黃、綠、藍、紫、棕、米、其他
 
-風格選項：簡約、甜美、韓系、美式休閒、街頭、復古、知性優雅、酷帥中性、運動、其他
+風格選項（可以自由描述，例如）：休閒、正式、運動、可愛、個性、復古、簡約、甜美、韓系、美式休閒、街頭、知性優雅、酷帥中性、學院風、波西米亞、龐克、嘻哈、日系、歐美、優雅、時尚、性感、俏皮等
 
 材質選項：棉、麻、絲、羊毛、皮革、牛仔、合成纖維、混紡、其他
 
@@ -117,13 +117,13 @@ def gemini_classify_image(image_path: str) -> dict:
 
 必須**只返回 JSON，不要任何其他文字**。"""
 
-        response = model.generate_content([
-            {
-                "mime_type": "image/jpeg",
-                "data": base64_image
-            },
-            prompt
-        ])
+        # 使用 Part 物件來正確傳遞圖片和文字
+        image_part = Part.from_data(
+            data=base64.b64decode(base64_image),
+            mime_type="image/jpeg"
+        )
+        
+        response = model.generate_content([image_part, prompt])
         
         # 正確處理回應
         content = response.text if hasattr(response, 'text') else str(response)

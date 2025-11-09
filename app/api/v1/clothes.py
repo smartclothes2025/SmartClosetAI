@@ -192,10 +192,28 @@ async def upload_clothes(
         # 4. AI 辨識
         if ai_detect_enabled:
             logger.info(f"執行 AI 辨識: {final_file_path}")
-            analysis_result = analyze_clothing_type(str(final_file_path), ai_detect_enabled=True)
+            analysis_result = analyze_clothing_type(str(final_file_path))
             
-            if analysis_result.get("category") and analysis_result["category"] != "特殊":
-                category = analysis_result["category"]
+            if analysis_result.get("category") and analysis_result["category"] != "special":
+                # AI 回傳的是英文類別，需要轉換成中文
+                ai_category_en = analysis_result["category"]
+                ai_category_map = {
+                    "tops": "上衣",
+                    "pants": "褲子",
+                    "skirts": "裙子",
+                    "dresses": "洋裝",
+                    "outerwear": "外套",
+                    "shoes": "鞋子",
+                    "bags": "包包",
+                    "hats": "帽子",
+                    "socks": "襪子",
+                    "jewelry": "配件",
+                    "bottoms": "褲子",
+                    "pantsuits": "洋裝"
+                }
+                category = ai_category_map.get(ai_category_en, category)
+                logger.info(f"AI 辨識類別: {ai_category_en} -> {category}")
+            
             if analysis_result.get("colors"):
                 color = analysis_result["colors"][0]
             if analysis_result.get("style"):
@@ -267,7 +285,7 @@ async def upload_clothes(
             logger.error(f"❌ GCS 上傳失敗: {gcs_error}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"圖片上傳失敗: {str(gcs_error)}")
         
-        # 6. 建立資料庫記錄
+        # 6. 建立資料庫記錄（style 不受限制，可以是任何文字）
         item = WardrobeItem(
             user_id=current_user.id,
             name=name or safe_stem,
@@ -277,7 +295,7 @@ async def upload_clothes(
             tags=tags_list,
             attributes=attributes_dict,
             brand=attributes_dict.get("brand", ""),
-            style=style if style else None,
+            style=style if style else None,  # 直接使用 style，不驗證
         )
         
         db.add(item)

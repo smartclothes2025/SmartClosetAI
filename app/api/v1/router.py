@@ -13,6 +13,7 @@ from .recommendations import router as recommendations_router
 from .notifications import router as notifications_router
 from .search import router as search_router
 from .virtual_fitting import router as fitting_router
+from .ai_analyze import router as ai_analyze_router
 from app.api.v1.endpoints import media
 
 
@@ -37,6 +38,7 @@ api_router.include_router(notifications_router, prefix="/notifications", tags=["
 api_router.include_router(search_router, prefix="/search", tags=["search"])
 api_router.include_router(media.router, prefix="/media", tags=["media"])
 api_router.include_router(fitting_router, prefix="/fitting", tags=["fitting"])
+api_router.include_router(ai_analyze_router, prefix="/ai", tags=["ai-analyze"])
 
 
 
