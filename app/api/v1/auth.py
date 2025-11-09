@@ -126,6 +126,8 @@ def register_user(
     display_name: str = Form(...),
     db: Session = Depends(get_db)
 ):
+    from app.services.storage import generate_signed_url_from_gcs_uri
+    
     existing_user = db.query(User).filter(User.email == email).first()
     if existing_user:
         raise HTTPException(status_code=400, detail="Email 已被註冊")
@@ -139,9 +141,24 @@ def register_user(
     db.add(user)
     db.commit()
     db.refresh(user)
+    
+    # 轉換 picture 為簽名 URL
+    picture_url = None
+    if user.picture:
+        try:
+            picture_url = generate_signed_url_from_gcs_uri(user.picture, expiration_minutes=60)
+        except Exception:
+            picture_url = None
+    
     return {
         "token": f"user-{user.id}-token",
-        "user": {"id": user.id, "email": user.email, "display_name": user.display_name, "role": user.role}
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "display_name": user.display_name,
+            "role": user.role,
+            "picture": picture_url
+        }
     }
 
 
@@ -172,13 +189,23 @@ def login_user(
                 db.add(user)
                 db.commit()
                 db.refresh(user)
+            # 轉換 picture 為簽名 URL
+            picture_url = None
+            if user.picture:
+                try:
+                    from app.services.storage import generate_signed_url_from_gcs_uri
+                    picture_url = generate_signed_url_from_gcs_uri(user.picture, expiration_minutes=60)
+                except Exception:
+                    picture_url = None
+            
             return {
                 "token": f"user-{user.id}-token",
                 "user": {
                     "id": user.id,
                     "email": user.email,
                     "display_name": user.display_name,
-                    "role": user.role or "user"
+                    "role": user.role or "user",
+                    "picture": picture_url
                 }
             }
         except Exception as e:
@@ -191,13 +218,24 @@ def login_user(
     user = db.query(User).filter(User.email == email).first()
     if not user or not user.password_hash or not verify_password(password, user.password_hash):
         raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
+    
+    # 轉換 picture 為簽名 URL
+    from app.services.storage import generate_signed_url_from_gcs_uri
+    picture_url = None
+    if user.picture:
+        try:
+            picture_url = generate_signed_url_from_gcs_uri(user.picture, expiration_minutes=60)
+        except Exception:
+            picture_url = None
+    
     return {
         "token": f"user-{user.id}-token",
         "user": {
             "id": user.id,
             "email": user.email,
             "display_name": user.display_name,
-            "role": user.role or "user"
+            "role": user.role or "user",
+            "picture": picture_url
         }
     }
 
@@ -265,6 +303,8 @@ def get_me(request: Request, db: Session = Depends(get_db)):
     """
     以 Authorization Bearer user-<id>-token 取得當前使用者，回傳基本資料。
     """
+    from app.services.storage import generate_signed_url_from_gcs_uri
+    
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith(AUTH_BEARER_PREFIX):
         raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
@@ -283,11 +323,22 @@ def get_me(request: Request, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=404, detail=ERR_USER_NOT_FOUND)
 
+    # 如果有頭貼，轉換成簽名 URL
+    picture_url = None
+    picture_gcs_uri = getattr(user, "picture", None)
+    if picture_gcs_uri:
+        try:
+            picture_url = generate_signed_url_from_gcs_uri(picture_gcs_uri, expiration_minutes=60)
+        except Exception as e:
+            logging.warning(f"生成頭貼簽名 URL 失敗: {e}")
+            picture_url = None
+
     return {
         "id": user.id,  # 加入 id 欄位供前端通知系統使用
         "email": getattr(user, "email", None),
         "display_name": getattr(user, "display_name", None),
         "interformation": getattr(user, "interformation", None),
+        "picture": picture_url,  # 回傳簽名 URL 而非 GCS URI
     }
 
 

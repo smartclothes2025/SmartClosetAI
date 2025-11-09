@@ -16,7 +16,8 @@ class User(Base):
     interformation = Column(String, nullable=True)
     password_hash = Column(String, nullable=False)
     firebase_uid = Column(String, nullable=True) 
-    role=Column(String) 
+    role = Column(String)
+    picture = Column(String, nullable=True)  # 使用者頭貼 GCS URI 
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))

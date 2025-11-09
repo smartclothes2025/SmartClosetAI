@@ -193,7 +193,8 @@ async def upload_profile_picture(
 ):
     """
     上傳使用者頭貼圖片到 GCS
-    - 圖片會儲存到: smartclothes_userphoto/{user_id}/{display_name}.jpg
+    - Bucket: smartclothes_userphoto
+    - 路徑: {user_id}/{display_name}.jpg
     - URL 會更新到 app_users.picture 欄位
     """
     user = _get_user_from_auth_header(authorization, db)
@@ -216,16 +217,16 @@ async def upload_profile_picture(
         if not file_extension:
             file_extension = ".jpg"
         
-        # 構建 GCS 路徑: smartclothes_userphoto/{user_id}/{display_name}.jpg
+        # 構建 GCS 路徑: {user_id}/{display_name}.jpg (不包含 bucket 名稱)
         filename = f"{display_name}{file_extension}"
-        gcs_path = f"smartclothes_userphoto/{user_id}/{filename}"
+        gcs_path = f"{user_id}/{filename}"
         
-        # 上傳到 GCS
+        # 上傳到 GCS - 指定 smartclothes_userphoto bucket
         gcs_uri = upload_file_to_gcs_from_bytes(
             file_bytes=file_bytes,
             destination_blob_name=gcs_path,
             mime_type=file.content_type,
-            bucket_name=None,  # 使用環境變數的 bucket
+            bucket_name="smartclothes_userphoto",  # 明確指定用戶頭貼專用 bucket
             public=False  # 私有檔案，需要簽名 URL
         )
         
