@@ -4,18 +4,32 @@ AI 辨識衣物 API
 提供獨立的 AI 辨識端點，讓前端在上傳前就能取得 AI 建議
 """
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.models.auth import User
 from app.api.v1.auth import get_current_user
-from app.services.image_processing import gemini_classify_image, get_default_classification
+from app.services.image_processing import gemini_classify_image, get_default_classification, process_image
 import logging
 from pathlib import Path
 import uuid as _uuid
 from typing import Optional
+from fastapi.responses import FileResponse
+import shutil
+import os
 
 router = APIRouter()
+
+
+def cleanup_temp_file(file_path: str):
+    """背景任務：清理臨時檔案"""
+    try:
+        if os.path.exists(file_path):
+            os.unlink(file_path)
+            logging.info(f"[清理] 已刪除臨時檔案: {file_path}")
+    except Exception as e:
+        logging.warning(f"[清理] 刪除臨時檔案失敗: {e}")
+
 
 @router.post("/clothing")
 async def analyze_clothing(
@@ -232,3 +246,78 @@ async def analyze_clothing_batch(
         "total": len(files),
         "results": results
     }
+
+
+@router.post("/remove-background")
+async def remove_background(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    去背 API - 移除圖片背景（僅用於預覽，不儲存到資料庫）
+    
+    前端流程：
+    1. 使用者在編輯頁勾選「智慧去背」
+    2. 點擊「下一步」時，呼叫此 API 處理每張圖片
+    3. 取得去背後的圖片（PNG 格式，透明背景）
+    4. 將去背後的圖片顯示在下一頁（僅預覽用）
+    5. 回傳後自動刪除臨時檔案，不會永久儲存
+    
+    回傳：去背後的圖片檔案（PNG 格式）
+    """
+    
+    # 驗證檔案類型
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="只接受圖片檔案")
+    
+    # 建立臨時目錄
+    temp_dir = Path("temp_remove_bg")
+    temp_dir.mkdir(exist_ok=True)
+    
+    # 生成臨時檔案名稱
+    file_ext = Path(file.filename).suffix or ".jpg"
+    temp_filename = f"rembg_{_uuid.uuid4().hex}{file_ext}"
+    temp_file_path = temp_dir / temp_filename
+    
+    try:
+        # 儲存臨時檔案
+        contents = await file.read()
+        with open(temp_file_path, "wb") as f:
+            f.write(contents)
+        
+        logging.info(f"[去背] 開始處理圖片: {temp_filename}")
+        
+        # 呼叫去背處理
+        try:
+            result = process_image(str(temp_file_path))
+            processed_path = Path(result["processed_image_path"])
+            
+            if not processed_path.exists():
+                raise HTTPException(status_code=500, detail="去背處理失敗，找不到處理後的檔案")
+            
+            logging.info(f"[去背] 處理完成: {processed_path}")
+            
+            # 註冊背景任務：在回傳圖片後自動刪除處理後的檔案
+            background_tasks.add_task(cleanup_temp_file, str(processed_path))
+            
+            # 回傳去背後的圖片（僅用於前端預覽，不會永久儲存）
+            return FileResponse(
+                path=str(processed_path),
+                media_type="image/png",
+                filename=f"removed_bg_{file.filename.rsplit('.', 1)[0]}.png"
+            )
+            
+        except Exception as e:
+            logging.error(f"[去背] 處理失敗: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"去背處理失敗: {str(e)}")
+    
+    finally:
+        # 清理原始臨時檔案（處理後的檔案會在回傳後自動清理）
+        try:
+            if temp_file_path.exists():
+                temp_file_path.unlink()
+                logging.info(f"[去背] 已刪除原始臨時檔案: {temp_filename}")
+        except Exception as e:
+            logging.warning(f"[去背] 刪除臨時檔案失敗: {e}")
