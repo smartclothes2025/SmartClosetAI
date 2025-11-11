@@ -227,7 +227,7 @@ class FashionAdvisor:
         if len(successful_parts) < 2:
             # 如果圖片少於 2 張，直接用 Imagen 生成
             logger.warning("圖片數量不足 2 張，直接使用 Imagen Text-to-Image。")
-            outfit_prompt = f"A realistic full-body photo of a young Taiwanese woman wearing {', '.join(item_descriptions)}. Natural outdoor setting, clear daytime, professional fashion photography."
+            outfit_prompt = f"A realistic full-body photo of a person wearing {', '.join(item_descriptions)}. Natural outdoor setting, clear daytime, professional fashion photography."
             return self._call_image_generation_api_fallback(outfit_prompt)
 
         # 2. 使用 Gemini 分析衣物並生成詳細的穿搭描述
@@ -241,7 +241,7 @@ class FashionAdvisor:
             f"你是專業的時尚造型師。使用者說：「{user_input}」\n\n"
             f"以上是使用者衣櫃中的 {len(successful_parts)} 件衣物圖片（{', '.join(item_descriptions)}）。\n\n"
             "請根據這些衣物的實際外觀（顏色、款式、材質、細節），生成一段**英文的詳細穿搭描述**，用於生成一張專業的全身穿搭照。\n"
-            "描述格式：A realistic full-body fashion photo of a young Taiwanese woman wearing [詳細描述每件衣物的顏色、款式、材質]。"
+            "描述格式：A realistic full-body fashion photo of a person wearing [詳細描述每件衣物的顏色、款式、材質]。"
             "描述中要包含：姿勢、背景、光線、拍攝風格等專業攝影要素。\n"
             "只輸出英文描述，不要有其他內容。"
         )
@@ -254,7 +254,7 @@ class FashionAdvisor:
             
             if not response.candidates or not response.candidates[0].content.parts:
                 logger.warning("Gemini 未返回有效的分析結果，使用預設描述。")
-                outfit_prompt = f"A realistic full-body photo of a young Taiwanese woman wearing {', '.join(item_descriptions)}. Natural outdoor setting, professional fashion photography."
+                outfit_prompt = f"A realistic full-body photo of a person wearing {', '.join(item_descriptions)}. Natural outdoor setting, professional fashion photography."
             else:
                 # 獲取 Gemini 生成的文本描述
                 outfit_prompt = response.candidates[0].content.parts[0].text.strip()
@@ -267,7 +267,7 @@ class FashionAdvisor:
         except Exception as e:
             logger.error(f"呼叫 Gemini 分析失敗: {e}", exc_info=True)
             # 失敗時使用預設描述
-            outfit_prompt = f"A realistic full-body photo of a young Taiwanese woman wearing {', '.join(item_descriptions)}. Natural outdoor setting, professional fashion photography."
+            outfit_prompt = f"A realistic full-body photo of a person wearing {', '.join(item_descriptions)}. Natural outdoor setting, professional fashion photography."
             return self._call_image_generation_api_fallback(outfit_prompt)
         
     

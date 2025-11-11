@@ -229,19 +229,25 @@ class ImageGenerationService:
             # 根據是否有用戶照片，調整提示詞
             if user_photo_base64:
                 # 有用戶照片：要求使用用戶的臉部特徵
-                tryon_prompt = f"""🎯 CRITICAL TASK: Virtual Try-On with User's Exact Facial Features
+                tryon_prompt = f"""🎯 CRITICAL TASK: Generate a **Hyper-Realistic Clone** Virtual Try-On
 
-📸 **REFERENCE IMAGE (Image #1)**: This is the USER'S ACTUAL PHOTO. You MUST preserve their exact appearance.
+📸 **REFERENCE IMAGE (Image #1)**: This is the USER'S ACTUAL PHOTO. This image dictates the *ONLY* person allowed in the final output.
 
-⚠️ **MOST IMPORTANT RULES** (FAILURE TO FOLLOW = TASK FAILED):
+**INPUT REFERENCES:**
+- **Image #1 (The User):** This is the person whose **EXACT FACE and IDENTITY** must be preserved. Do not change their appearance, skin tone, hair, age, or gender. This is the **BASE IMAGE** for the edit.
+- **Images #2 onwards (Clothing Items):**
+{clothing_description}
 
-1. **PRESERVE USER'S IDENTITY** 🔴 CRITICAL:
-   - The person in the generated image MUST look EXACTLY like the person in Image #1
-   - COPY their facial features: face shape, eyes, nose, mouth, eyebrows, skin tone
-   - COPY their gender, age appearance, and overall look
-   - COPY their hair color and hairstyle
-   - DO NOT change their ethnicity, gender, or any facial characteristics
-   - This is NOT about creating a "similar" person - it's about showing THE SAME PERSON wearing different clothes
+**REQUIRED OUTPUT:**
+Generate a new, single, photorealistic image that looks like a seamless edit of Image #1.
+
+1. **FACE AND IDENTITY PRESERVATION 🔴 EXTREME PRIORITY**:
+   - The person in the generated image **MUST be a perfect, photo-realistic clone** of the person in Image #1.
+   - **COPY EXACTLY**: Their face shape, eyes, nose, mouth, eyebrows, skin tone, and any unique facial markings (moles, scars, wrinkles, age lines, etc.).
+   - **COPY EXACTLY**: Their gender, age appearance, hair color, and hairstyle.
+   - **DO NOT** beautify, smooth, stylize, or model the face. The result must look like the user, **NOT** a professional model.
+   - **GENDER LOCK**: The person generated must have the same gender as Image #1.
+   - **PRIORITIZE FACE MATCHING ABOVE ALL OTHER FACTORS.**
 
 2. **GENDER ACCURACY** 🔴 CRITICAL:
    - If Image #1 shows a MALE person → Generate a MALE person
@@ -253,7 +259,8 @@ class ImageGenerationService:
 
 4. **CLOTHING REQUIREMENTS**:
    - Study each clothing image carefully (color, pattern, texture, cut)
-   - The person MUST wear clothes that look EXACTLY like these images
+   - The person MUST wear clothes that look **IDENTICAL** to these images.
+   - The fabric must show **realistic folds and shadows**, accurately blending with the body shape.
    - DO NOT create new designs or change colors/patterns
    - DO NOT merge multiple items into one piece
 
@@ -266,24 +273,23 @@ class ImageGenerationService:
    - Accessories → appropriately placed
 
 6. **VISUAL PRESENTATION**:
-   - Natural, elegant pose
-   - Full body shot showing all clothing details
-   - Simple background (solid color or minimal scene)
-   - Soft, natural lighting
-   - High resolution, professional photography quality
+   - **REALISM OVER ARTISTRY**: The final output must be a **Candid, realistic photo** taken with standard, non-studio lighting.
+   - **POSE**: Natural, relaxed standing pose (mimicking a photo taken in a fitting room or by a friend).
+   - **BACKGROUND**: Simple, non-distracting plain wall or domestic scene (e.g., a simple bedroom or hallway).
+   - **QUALITY**: Ultra-realistic, high-detail texture. **Avoid glossy, airbrushed, or professional photography styles.**
 
 7. **USER'S ADDITIONAL REQUEST**: {prompt}
 
-🎯 **TASK SUMMARY**: Generate a photo of THE EXACT SAME PERSON from Image #1 wearing the exact clothes from the subsequent images. This person must be recognizable as the same individual - same face, same gender, same overall appearance.
+🎯 **TASK SUMMARY**: Generate an **unfiltered, photorealistic** image of the **EXACT SAME PERSON** from Image #1 wearing the exact clothes from the subsequent images. **PRIORITIZE FACE IDENTITY**.
 
 ⚠️ **VERIFICATION CHECKLIST**:
-- [ ] Does the person have the same face as Image #1?
+- [ ] Is the person's face an **exact match** to Image #1, including unique markings?
 - [ ] Does the person have the same gender as Image #1?
 - [ ] Are the clothes identical to the provided clothing images?
 
 Now generate the virtual try-on image following ALL requirements above."""
             else:
-                # 沒有用戶照片：使用亞洲女性模特兒
+                # 沒有用戶照片：使用亞洲模特兒
                 tryon_prompt = f"""🎯 虛擬試穿任務 - 請精確執行以下指令:
 
 📋 **衣物清單** (按順序提供的圖片):
@@ -306,11 +312,11 @@ Now generate the virtual try-on image following ALL requirements above."""
    - 如果有配件,適當搭配
 
 3. **模特兒要求**:
-   - ✅ **必須是亞洲女性（台灣）**
+   - ✅ **必須是亞洲人**
    - 東亞面孔特徵，自然黑髮或深棕色頭髮
    - 膚色：自然的亞洲膚色（偏白皙到自然膚色）
-   - 身材：符合亞洲女性平均身材比例
-   - 年齡：20-30 歲左右的年輕女性
+   - 身材：符合亞洲人平均身材比例
+   - 年齡：20-30 歲左右的年輕人
 
 4. **視覺呈現**:
    - 專業時尚模特兒,姿態自然優雅
@@ -321,7 +327,7 @@ Now generate the virtual try-on image following ALL requirements above."""
 
 5. **用戶額外需求**: {prompt}
 
-⚠️ **重要提醒**: 請將提供的衣物圖片視為「產品照片」,您的任務是生成一張「亞洲（台灣）女性模特兒穿著這些產品的展示照片」,而不是根據風格創作新服裝。
+⚠️ **重要提醒**: 請將提供的衣物圖片視為「產品照片」,您的任務是生成一張「亞洲（台灣）模特兒穿著這些產品的展示照片」,而不是根據風格創作新服裝。
 
 現在請根據接下來提供的衣物圖片,生成符合以上所有要求的虛擬試穿圖片。"""
             
@@ -339,9 +345,10 @@ Now generate the virtual try-on image following ALL requirements above."""
                         user_img = user_img.convert('RGB')
                     
                     # Resize if too large
-                    max_size = 1024
-                    if user_img.width > max_size or user_img.height > max_size:
-                        user_img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                    # max_size = 1024
+                    # if user_img.width > max_size or user_img.height > max_size:
+                    #     user_img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                    logger.info(f"   用戶照片尺寸: {user_img.size[0]}x{user_img.size[1]} (保持原尺寸或接近原尺寸)")
                     
                     # Convert to bytes
                     user_img_byte_arr = BytesIO()
@@ -575,17 +582,15 @@ Now generate the virtual try-on image following ALL requirements above."""
         
         clothing_text = ", ".join(clothing_descriptions)
         
-        # Create comprehensive prompt (不使用身體數據，指定亞洲女性模特兒)
-        prompt = f"""A professional Asian Taiwanese female fashion model wearing {clothing_text}, 
-        East Asian facial features, natural black or dark brown hair,
-        natural Asian skin tone, slim build typical of Asian women,
-        age 20-30 years old,
+        # Create comprehensive prompt (不使用身體數據，指定亞洲模特兒)
+        prompt = f"""A Asian Taiwanese person wearing {clothing_text}, 
+        East Asian facial features,
+        natural Asian skin tone,
         standing in a modern minimalist studio, 
         soft natural lighting, neutral background, 
-        full body shot, confident and elegant pose, 
-        high-end fashion photography style, 
-        detailed clothing texture, realistic fabric, 
-        professional fashion magazine quality"""
+        full body shot, relaxed and casual pose,
+        detailed clothing texture, realistic fabric,
+        high facial realism and detail is critical"""
         
         return prompt
     
