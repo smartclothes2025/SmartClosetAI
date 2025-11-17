@@ -121,8 +121,9 @@ async def create_outfit_stage1(
         
         if existing:
             # 更新現有穿搭的圖片
-            existing.image_url = outfit_data.image_url
-            existing.is_ai_generated = outfit_data.is_ai_generated
+            if outfit_data.image_url:
+                existing.image_url = outfit_data.image_url
+                existing.is_ai_generated = outfit_data.is_ai_generated
             outfit = existing
             logger.info(f"更新現有穿搭 ID={outfit.id}")
         else:
