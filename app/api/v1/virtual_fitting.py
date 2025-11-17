@@ -3,7 +3,7 @@
 Virtual Fitting API - AI-powered realistic try-on generation
 Uses AI image generation services to create realistic clothing try-on images
 """
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
 from pydantic import BaseModel
 from typing import List, Optional
 import os
@@ -17,9 +17,51 @@ from sqlalchemy.orm import Session
 # Import our image generation service
 from app.services.image_generation import image_service
 from app.core.db import get_db
+from app.models.auth import User
 
 # Setup logger
 logger = logging.getLogger(__name__)
+
+# 用於 JSON body 端點的用戶認證（只從 Header 讀取）
+def get_current_user_from_header(
+    request: Request,
+    db: Session = Depends(get_db)
+) -> User:
+    """
+    從 Header 的 Authorization: Bearer user-<uuid>-token 驗證使用者
+    專用於 JSON body 端點，避免與 Form 參數衝突
+    """
+    from app.api.v1.auth import AUTH_BEARER_PREFIX, ERR_INVALID_TOKEN, ERR_USER_NOT_FOUND
+    import uuid as _uuid
+    
+    # 讀取 Header Bearer
+    auth_header = request.headers.get("Authorization", "")
+    token = None
+    
+    if auth_header.startswith(AUTH_BEARER_PREFIX):
+        token = auth_header.split(" ", 1)[1]
+    
+    # 無 token
+    if not token:
+        raise HTTPException(status_code=401, detail=ERR_INVALID_TOKEN)
+    
+    prefix = "user-"
+    suffix = "-token"
+    if not (isinstance(token, str) and token.startswith(prefix) and token.endswith(suffix)):
+        raise HTTPException(status_code=401, detail=ERR_INVALID_TOKEN)
+    
+    # 解析 UUID
+    user_id = token[len(prefix):-len(suffix)] if len(token) > (len(prefix) + len(suffix)) else ""
+    try:
+        _uuid.UUID(user_id)  # 驗證格式
+    except Exception:
+        raise HTTPException(status_code=401, detail=ERR_INVALID_TOKEN)
+    
+    # 查 DB
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail=ERR_USER_NOT_FOUND)
+    return user
 
 router = APIRouter(tags=["virtual-fitting"])
 
@@ -47,7 +89,11 @@ class VirtualFittingResponse(BaseModel):
 
 
 @router.post("/generate", response_model=VirtualFittingResponse)
-async def generate_virtual_fitting(request: VirtualFittingRequest, db: Session = Depends(get_db)):
+async def generate_virtual_fitting(
+    request: VirtualFittingRequest,
+    current_user: User = Depends(get_current_user_from_header),
+    db: Session = Depends(get_db)
+):
     """
     Generate realistic AI-powered virtual try-on image
     
@@ -96,18 +142,36 @@ async def generate_virtual_fitting(request: VirtualFittingRequest, db: Session =
             style="casual"
         )
         
-        # 處理用戶照片（如果有的話）
+        # 處理用戶照片（優先級：上傳圖片 > 用戶頭貼 > 預設模特兒）
         user_photo_base64 = None
+        photo_source = "預設模特兒"
+        
         if request.user_photo:
-            # 前端傳來的可能是 data URL 格式，需要提取 base64 部分
+            # 最高優先級：前端上傳的照片
             if request.user_photo.startswith('data:image'):
                 # 格式: data:image/jpeg;base64,/9j/4AAQ...
                 user_photo_base64 = request.user_photo.split(',', 1)[1] if ',' in request.user_photo else request.user_photo
             else:
                 user_photo_base64 = request.user_photo
-            logger.info("✅ 檢測到用戶照片，將使用個性化生成")
+            photo_source = "上傳照片"
+            logger.info("✅ 檢測到上傳照片（最高優先級），將使用個性化生成")
+        elif current_user.picture:
+            # 次優先級：用戶頭貼（從 GCS 下載）
+            try:
+                logger.info(f"📸 嘗試從用戶頭貼載入照片: {current_user.picture}")
+                user_photo_base64 = await image_service.download_user_photo_from_gcs(
+                    current_user.picture,
+                    current_user.id
+                )
+                if user_photo_base64:
+                    photo_source = "用戶頭貼"
+                    logger.info("✅ 成功載入用戶頭貼，將使用個性化生成")
+                else:
+                    logger.warning("⚠️ 用戶頭貼載入失敗，將使用預設模特兒")
+            except Exception as e:
+                logger.warning(f"⚠️ 載入用戶頭貼時發生錯誤: {str(e)}，將使用預設模特兒")
         else:
-            logger.info("ℹ️ 未提供用戶照片，將使用預設模特兒")
+            logger.info("ℹ️ 未提供照片且無用戶頭貼，將使用預設模特兒")
         
         # Generate image using available AI service with clothing items
         logger.info(f"開始生成圖片，使用提示詞長度：{len(prompt)} 字元")
@@ -133,9 +197,10 @@ async def generate_virtual_fitting(request: VirtualFittingRequest, db: Session =
             
             logger.info(f"圖片生成成功，返回 base64 數據")
             logger.info(f"使用衣物圖片數量: {clothing_images_used}")
+            logger.info(f"照片來源: {photo_source}")
             
             # 構建提示訊息
-            generation_info = f"✅ 使用 {clothing_images_used} 張實際衣物圖片生成 (Image-to-Image)"
+            generation_info = f"✅ 使用 {clothing_images_used} 張實際衣物圖片生成 (Image-to-Image)\n📸 照片來源: {photo_source}"
             
             return VirtualFittingResponse(
                 type="image",

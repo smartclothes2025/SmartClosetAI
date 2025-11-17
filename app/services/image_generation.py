@@ -594,6 +594,78 @@ Now generate the virtual try-on image following ALL requirements above."""
         
         return prompt
     
+    async def download_user_photo_from_gcs(
+        self,
+        picture_uri: str,
+        user_id: str
+    ) -> Optional[str]:
+        """
+        從 GCS 下載用戶頭貼並轉換為 base64
+        
+        Args:
+            picture_uri: 用戶頭貼的 GCS URI 或完整路徑
+            user_id: 用戶 ID
+            
+        Returns:
+            Optional[str]: base64 編碼的圖片，如果失敗則返回 None
+        """
+        try:
+            # 檢查 GCS 是否可用
+            if not GCS_AVAILABLE:
+                logger.warning("google-cloud-storage 未安裝，無法下載用戶頭貼")
+                return None
+            
+            # 構建完整的 GCS URI
+            # 如果 picture_uri 已經是完整的 gs:// 格式，直接使用
+            # 否則假設它是相對路徑，需要加上 bucket 和路徑前綴
+            if picture_uri.startswith('gs://'):
+                gcs_uri = picture_uri
+            else:
+                # 假設格式為 smartclothes_userphoto/{user_id}/filename
+                # 或者只是 filename，需要構建完整路徑
+                bucket_name = "smartclothes_userphoto"
+                
+                # 如果 picture_uri 不包含用戶 ID 路徑，加上它
+                if not picture_uri.startswith(f"{user_id}/"):
+                    blob_path = f"{user_id}/{picture_uri}"
+                else:
+                    blob_path = picture_uri
+                
+                gcs_uri = f"gs://{bucket_name}/{blob_path}"
+            
+            logger.info(f"📥 正在從 GCS 下載用戶頭貼: {gcs_uri}")
+            
+            # 使用現有的 _download_image 方法下載
+            img_data = self._download_image(gcs_uri)
+            
+            if not img_data or len(img_data) < 100:
+                logger.warning(f"下載的圖片數據太小或為空: {len(img_data) if img_data else 0} bytes")
+                return None
+            
+            # 驗證是否為有效圖片
+            try:
+                img = Image.open(BytesIO(img_data))
+                
+                # 轉換為 RGB
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                
+                # 轉換為 base64
+                img_byte_arr = BytesIO()
+                img.save(img_byte_arr, format='JPEG', quality=95)
+                img_base64 = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
+                
+                logger.info(f"✅ 成功下載並轉換用戶頭貼 (大小: {len(img_data) / 1024:.1f} KB)")
+                return img_base64
+                
+            except Exception as img_error:
+                logger.error(f"無法解析下載的圖片: {str(img_error)}")
+                return None
+            
+        except Exception as e:
+            logger.error(f"下載用戶頭貼時發生錯誤: {str(e)}", exc_info=True)
+            return None
+    
     async def enhance_with_user_photo(
         self,
         user_photo_base64: str,
