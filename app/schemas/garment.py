@@ -7,3 +7,5 @@ class Garment(BaseModel):
     material: str
     style: str
 #會用來接 Vision 回傳結果的「衣物模型」
+#會用來接 Vision 回傳結果的「衣物模型」
+

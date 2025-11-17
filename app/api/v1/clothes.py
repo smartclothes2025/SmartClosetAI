@@ -182,12 +182,12 @@ async def upload_clothes(
         
         final_file_path = temp_file_path
         
-        # 3. 去背處理
-        if remove_bg_enabled:
-            logger.info(f"執行去背: {final_file_path}")
-            proc_res = process_image(str(final_file_path))
-            processed_file_path = Path(proc_res["processed_image_path"])
-            final_file_path = processed_file_path
+        # # 3. 去背處理
+        # if remove_bg_enabled:
+        #     logger.info(f"執行去背: {final_file_path}")
+        #     proc_res = process_image(str(final_file_path))
+        #     processed_file_path = Path(proc_res["processed_image_path"])
+        #     final_file_path = processed_file_path
         
         # 4. AI 辨識
         if ai_detect_enabled:
