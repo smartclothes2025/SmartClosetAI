@@ -341,6 +341,53 @@ def list_posts(
         logger.exception("list_posts failed")
         raise HTTPException(status_code=500, detail="讀取貼文失敗")
 
+@router.post("/{post_id}/like")
+def like_post(
+    post_id: _uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(current_user_from_header),
+):
+    """
+    對貼文按讚。
+    目前實作：每按一次就讓 like_count +1（沒有做「同一使用者只能按一次」的判斷）。
+    回傳最新的 like_count。
+    """
+    try:
+        # 先確認貼文存在
+        row = db.execute(
+            text("SELECT like_count FROM user_post WHERE id = :id"),
+            {"id": post_id},
+        ).mappings().first()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="找不到該貼文")
+
+        # 直接讓 like_count + 1
+        updated = db.execute(
+            text(
+                """
+                UPDATE user_post
+                SET like_count = COALESCE(like_count, 0) + 1,
+                    updated_at = NOW()
+                WHERE id = :id
+                RETURNING like_count;
+                """
+            ),
+            {"id": post_id},
+        ).mappings().first()
+
+        db.commit()
+
+        return {
+            "post_id": str(post_id),
+            "like_count": updated["like_count"],
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("like_post failed")
+        raise HTTPException(status_code=500, detail=f"按讚失敗: {e}")
 
 @router.get("/{post_id}")
 def get_post(
@@ -416,3 +463,5 @@ def delete_post(
     except Exception as e:
         logger.exception("delete_post failed")
         raise HTTPException(status_code=500, detail=f"刪除貼文失敗: {e}")
+
+# 直接貼到 app/api/v1/posts.py 裡（放在 get_post 後面即可）
