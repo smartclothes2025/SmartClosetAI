@@ -48,12 +48,15 @@ def get_current_user_from_header(
     import uuid as _uuid
 
     auth_header = request.headers.get("Authorization", "")
+    if not auth_header:
+        logger.warning("未收到 Authorization header，拒絕存取虛擬試衣 API")
     token = None
 
     if auth_header.startswith(AUTH_BEARER_PREFIX):
         token = auth_header.split(" ", 1)[1]
 
     if not token:
+        logger.warning("Authorization header 格式錯誤或缺少 Bearer token")
         raise HTTPException(status_code=401, detail=ERR_INVALID_TOKEN)
 
     prefix = "user-"
@@ -65,11 +68,13 @@ def get_current_user_from_header(
     try:
         _uuid.UUID(user_id)
     except Exception:
+        logger.warning("Authorization token 無法解析為有效 UUID")
         raise HTTPException(status_code=401, detail=ERR_INVALID_TOKEN)
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail=ERR_USER_NOT_FOUND)
+    logger.info(f"成功驗證使用者 {user_id}，可訪問虛擬試衣 API")
     return user
 
 
@@ -179,8 +184,9 @@ async def generate_virtual_fitting(
             try:
                 if current_user.picture.startswith("gs://"):
                     logger.info("嘗試從 GCS 載入用戶頭貼")
-                    user_photo_base64 = image_service.download_user_photo_from_gcs(
-                        current_user.picture
+                    user_photo_base64 = await image_service.download_user_photo_from_gcs(
+                        current_user.picture,
+                        str(current_user.id)
                     )
                     photo_source = "用戶頭貼 (GCS)"
                 else:

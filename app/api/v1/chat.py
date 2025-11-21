@@ -8,9 +8,14 @@ from app.core.db import get_db
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 import uuid as _uuid
-
+LOG_FILE_PATH = 'smartcloset_activity.log'
 # 配置日誌
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    filename=LOG_FILE_PATH,  # 將日誌寫入檔案
+    filemode='a'
+)
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -24,11 +29,14 @@ except Exception as e:
     advisor = None
     
     
-    
+import sys
 
 @router.get("/ping")
 def ping():
     logger.info("收到 /ping 請求")
+    print("--- 應用程式內部 print：收到 /ping 請求 ---")
+    sys.stderr.write("--- 最終測試：sys.stderr.write 輸出 ---\n")
+    sys.stderr.flush()
     return {"message": "pong"}
 
 class ChatRequest(BaseModel):
@@ -84,10 +92,15 @@ async def get_outfit_recommendation(
         raise HTTPException(status_code=400, detail="缺少 user_input")
         
     try:
+        # 獲取用戶頭貼 URI
+        user_picture_uri = current_user.picture if hasattr(current_user, 'picture') else None
+        logger.info(f"📸 用戶頭貼 URI: {user_picture_uri}")
+        
         result = await advisor.process_user_input(
-            user_id=user_id,                          # 傳入從依賴注入中獲取的 user_id
+            user_id=user_id,
             user_input=user_input, 
-            user_image_data=user_image_data
+            user_image_data=user_image_data,
+            user_picture_uri=user_picture_uri  # 傳遞用戶頭貼 URI
         )
             
         logger.info(f"Advisor 返回結果: {result}")

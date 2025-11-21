@@ -50,10 +50,19 @@ except Exception as e:
 # 啟動服務器
 if __name__ == '__main__':
     print("\n[啟動] Uvicorn 服務器...")
-    print("  地址: http://0.0.0.0:8000")
-    print("  文檔: http://localhost:8000/docs")
+    print("  地址: http://0.0.0.0:8077")
+    print("  文檔: http://localhost:8077/docs")
     print("  按 Ctrl+C 停止")
     print("=" * 60)
     
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    # 啟用詳細日誌，確保所有請求都會顯示
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=8077,
+        reload=True,
+        log_level="info",  # 設定日誌級別為 info
+        access_log=True,   # 啟用訪問日誌
+        use_colors=True    # 使用彩色輸出
+    )
