@@ -313,8 +313,8 @@ Now generate the virtual try-on image following ALL requirements above."""
    - 如果有配件,適當搭配
 
 3. **模特兒要求**:
-   - ✅ **必須是亞洲人**
-   - 東亞面孔特徵，自然黑髮或深棕色頭髮
+   - ✅ **必須是亞洲人(台灣人)**
+   - 東亞面孔特徵，自然黑髮或深棕色的直髮
    - 膚色：自然的亞洲膚色（偏白皙到自然膚色）
    - 身材：符合亞洲人平均身材比例
    - 年齡：20-30 歲左右的年輕人
@@ -339,31 +339,25 @@ Now generate the virtual try-on image following ALL requirements above."""
             if user_photo_base64:
                 try:
                     logger.info("📸 檢測到用戶照片，正在處理...")
-                    user_photo_data = base64.b64decode(user_photo_base64)
-                    user_img = Image.open(BytesIO(user_photo_data))
                     
-                    # Convert to RGB if necessary
-                    if user_img.mode != 'RGB':
-                        user_img = user_img.convert('RGB')
+                    # 🔥 關鍵修改：直接使用原始 base64，不做任何處理
+                    user_img_bytes = base64.b64decode(user_photo_base64)
                     
-                    # Resize if too large
-                    # max_size = 1024
-                    # if user_img.width > max_size or user_img.height > max_size:
-                    #     user_img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-                    logger.info(f"   用戶照片尺寸: {user_img.size[0]}x{user_img.size[1]} (保持原尺寸或接近原尺寸)")
+                    # 只做基本驗證，確認是有效圖片
+                    try:
+                        user_img = Image.open(BytesIO(user_img_bytes))
+                        logger.info(f"   用戶照片驗證通過 - 格式: {user_img.format}, 尺寸: {user_img.size[0]}x{user_img.size[1]}, 模式: {user_img.mode}")
+                    except Exception as img_error:
+                        logger.error(f"   用戶照片驗證失敗: {str(img_error)}")
+                        raise
                     
-                    # Convert to bytes
-                    user_img_byte_arr = BytesIO()
-                    user_img.save(user_img_byte_arr, format='JPEG', quality=95)
-                    user_img_bytes = user_img_byte_arr.getvalue()
-                    
-                    # Add user photo as the first image (after prompt)
+                    # 🔥 直接使用原始數據，不重新編碼
                     content_parts.append({
-                        "mime_type": "image/jpeg",
+                        "mime_type": "image/jpeg",  # 或根據實際格式動態設置
                         "data": user_img_bytes
                     })
                     
-                    logger.info(f"✅ 用戶照片已載入 (大小: {len(user_img_bytes) / 1024:.1f} KB)")
+                    logger.info(f"✅ 用戶照片已載入 (原始大小: {len(user_img_bytes) / 1024:.1f} KB)")
                 except Exception as e:
                     logger.warning(f"⚠️ 用戶照片處理失敗: {str(e)}，將使用預設模特兒")
             
