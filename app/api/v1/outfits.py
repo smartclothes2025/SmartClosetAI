@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, date
 import logging
+from uuid import UUID
 
 from app.core.db import get_db
 from app.models.outfit import Outfit
@@ -28,7 +29,6 @@ class OutfitCreateStage1(BaseModel):
     """第一階段：保存圖片"""
     worn_date: str  # YYYY-MM-DD 格式
     image_url: str  # 圖片 URL 或 base64
-    is_ai_generated: bool = False
     item_ids: Optional[List[int]] = []  # 使用的衣物 ID 列表
 
 class OutfitUpdateStage2(BaseModel):
@@ -36,23 +36,16 @@ class OutfitUpdateStage2(BaseModel):
     name: Optional[str] = None  # 標題
     description: Optional[str] = None  # 想要分享什麼
     tags: Optional[str] = None  # 標籤（逗號分隔）
-    note: Optional[str] = None  # 私人筆記
-    is_public: bool = False  # 是否公開
-    is_complete: bool = True  # 標記為完成
 
 class OutfitResponse(BaseModel):
     id: int
     name: Optional[str]
     worn_date: str
     image_url: Optional[str]
-    is_ai_generated: bool
     description: Optional[str]
     tags: Optional[str]
-    note: Optional[str]
-    is_complete: bool
-    is_public: bool
     created_at: datetime
-    user_id: int
+    user_id: UUID
     item_count: int = 0
 
     class Config:
@@ -123,7 +116,6 @@ async def create_outfit_stage1(
             # 更新現有穿搭的圖片
             if outfit_data.image_url:
                 existing.image_url = outfit_data.image_url
-                existing.is_ai_generated = outfit_data.is_ai_generated
             outfit = existing
             logger.info(f"更新現有穿搭 ID={outfit.id}")
         else:
@@ -132,8 +124,6 @@ async def create_outfit_stage1(
                 user_id=current_user.id,
                 worn_date=worn_date_obj,
                 image_url=outfit_data.image_url,
-                is_ai_generated=outfit_data.is_ai_generated,
-                is_complete=False  # 第一階段未完成
             )
             db.add(outfit)
             logger.info(f"創建新穿搭，日期={outfit_data.worn_date}")
@@ -157,12 +147,8 @@ async def create_outfit_stage1(
             name=outfit.name,
             worn_date=outfit.worn_date.strftime("%Y-%m-%d"),
             image_url=outfit.image_url,
-            is_ai_generated=outfit.is_ai_generated,
             description=outfit.description,
             tags=outfit.tags,
-            note=outfit.note,
-            is_complete=outfit.is_complete,
-            is_public=outfit.is_public,
             created_at=outfit.created_at,
             user_id=outfit.user_id,
             item_count=len(outfit.items)
@@ -208,11 +194,6 @@ async def update_outfit_stage2(
             outfit.description = outfit_data.description
         if outfit_data.tags is not None:
             outfit.tags = outfit_data.tags
-        if outfit_data.note is not None:
-            outfit.note = outfit_data.note
-        
-        outfit.is_public = outfit_data.is_public
-        outfit.is_complete = outfit_data.is_complete
         
         db.commit()
         db.refresh(outfit)
@@ -224,12 +205,8 @@ async def update_outfit_stage2(
             name=outfit.name,
             worn_date=outfit.worn_date.strftime("%Y-%m-%d"),
             image_url=outfit.image_url,
-            is_ai_generated=outfit.is_ai_generated,
             description=outfit.description,
             tags=outfit.tags,
-            note=outfit.note,
-            is_complete=outfit.is_complete,
-            is_public=outfit.is_public,
             created_at=outfit.created_at,
             user_id=outfit.user_id,
             item_count=len(outfit.items)
@@ -281,12 +258,8 @@ async def list_outfits(
                 name=outfit.name,
                 worn_date=outfit.worn_date.strftime("%Y-%m-%d"),
                 image_url=outfit.image_url,
-                is_ai_generated=outfit.is_ai_generated,
                 description=outfit.description,
                 tags=outfit.tags,
-                note=outfit.note,
-                is_complete=outfit.is_complete,
-                is_public=outfit.is_public,
                 created_at=outfit.created_at,
                 user_id=outfit.user_id,
                 item_count=len(outfit.items)
@@ -322,12 +295,8 @@ async def get_outfit(
         name=outfit.name,
         worn_date=outfit.worn_date.strftime("%Y-%m-%d"),
         image_url=outfit.image_url,
-        is_ai_generated=outfit.is_ai_generated,
         description=outfit.description,
         tags=outfit.tags,
-        note=outfit.note,
-        is_complete=outfit.is_complete,
-        is_public=outfit.is_public,
         created_at=outfit.created_at,
         user_id=outfit.user_id,
         item_count=len(outfit.items)
