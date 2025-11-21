@@ -233,10 +233,23 @@ class FashionAdvisor:
 
     def is_outfit_request(self, user_input: str) -> bool:
         """簡單判斷使用者是否在詢問穿搭"""
-        keywords = ["穿", "穿搭", "衣服", "搭配", "服裝", "試穿", "推薦"]
+        keywords = ["穿搭", "推薦", "搭配", "穿甚麼", "穿什麼", "怎麼穿", "穿衣", "服裝"]
         is_request = any(word in user_input for word in keywords)
         logger.debug(f"判斷 '{user_input}' 是否為穿搭請求: {is_request}")
         return is_request
+    
+    def is_weather_only_request(self, user_input: str) -> bool:
+        """判斷使用者是否只在詢問天氣（不包含穿搭）"""
+        weather_keywords = ["天氣", "氣溫", "溫度", "下雨", "晴天", "陰天", "weather"]
+        outfit_keywords = ["穿搭", "推薦", "搭配", "穿甚麼", "穿什麼", "怎麼穿"]
+        
+        has_weather = any(word in user_input for word in weather_keywords)
+        has_outfit = any(word in user_input for word in outfit_keywords)
+        
+        # 只有天氣關鍵字，沒有穿搭關鍵字
+        is_weather_only = has_weather and not has_outfit
+        logger.debug(f"判斷 '{user_input}' 是否只詢問天氣: {is_weather_only}")
+        return is_weather_only
 
 
     def _upload_image_to_gcs(self, image_data: bytes, folder: str = "generated_outfits") -> Optional[str]:
@@ -260,6 +273,30 @@ class FashionAdvisor:
             return None
 
 
+    def _generate_outfit_fallback_text(self, user_input: str, wardrobe_items: List[ClothingItem], weather_info: Optional[Dict[str, Any]] = None, weather_advice: str = "") -> Dict[str, Any]:
+        """穿搭請求但圖片生成失敗時的降級文字回覆"""
+        logger.info("穿搭圖片生成失敗，提供降級文字建議。")
+        
+        if wardrobe_items:
+            wardrobe_summary = "、".join([f"{item.name}" for item in wardrobe_items[:5]])
+            if len(wardrobe_items) > 5:
+                wardrobe_summary += f" 等 {len(wardrobe_items)} 件衣物"
+            
+            response_text = f"""抱歉，目前無法生成穿搭圖片。
+
+根據您的衣櫃（{wardrobe_summary}），我建議您可以嘗試以下搭配：
+
+1. 選擇一件上衣搭配褲子或裙子
+2. 根據場合選擇合適的外套
+3. 搭配舒適的鞋子完成整體造型"""
+            
+            if weather_info:
+                response_text += f"\n\n🌤️ 今天{weather_info['city']}的溫度是 {weather_info['temperature']}°C，{weather_advice}"
+            
+            return {"type": "text", "text": response_text}
+        else:
+            return {"type": "text", "text": "您的衣櫃目前是空的，請先上傳一些衣物照片，我才能為您提供穿搭建議！"}
+    
     def chat_with_gemini(self, user_input: str, wardrobe_items: List[ClothingItem], weather_info: Optional[Dict[str, Any]] = None, weather_advice: str = "") -> Dict[str, Any]:
         """
         使用 Gemini 模型進行一般聊天，並整合衣櫃清單和天氣資訊。
@@ -315,10 +352,11 @@ class FashionAdvisor:
             return {"type": "text", "text": gemini_text}
         except Exception as e:
             if ResourceExhausted and isinstance(e, ResourceExhausted):
-                logger.error(f"與 Gemini 聊天時發生 ResourceExhausted 錯誤: {str(e)}", exc_info=True)
+                logger.warning(f"與 Gemini 聊天時發生 ResourceExhausted 錯誤（429），返回友善回覆: {str(e)}")
+                # 返回友善的固定回覆，不顯示錯誤訊息
                 return {
                     "type": "text",
-                    "text": "目前生成服務臨時忙碌（429 Resource exhausted），請稍後再試或稍微減少請求頻率。"
+                    "text": "我是您的智慧穿搭助手！您可以問我：\n\n👗 '今天穿什麼？'\n🌤️ '今天天氣如何？'\n💡 '推薦穿搭'\n\n我會根據您的衣櫃和天氣為您提供建議！"
                 }
             logger.error(f"與 Gemini 聊天時發生錯誤: {str(e)}", exc_info=True)
             return {"type": "text", "text": f"服務器內部錯誤：{str(e)}"}
@@ -498,6 +536,23 @@ class FashionAdvisor:
 
 
         try:
+            # 1️⃣ 檢查是否只詢問天氣（不包含穿搭）
+            if self.is_weather_only_request(user_input):
+                logger.info("🌤️ 偵測到純天氣查詢，返回天氣資訊。")
+                if weather_info:
+                    weather_text = f"""📍 {weather_info['city']} 的天氣資訊：
+
+🌡️ 溫度：{weather_info['temperature']}°C（體感 {weather_info['feels_like']}°C）
+☁️ 天氣：{weather_info['weather_description']}
+💧 濕度：{weather_info['humidity']}%
+💨 風速：{weather_info['wind_speed']} m/s
+
+{weather_advice}"""
+                    return {"type": "text", "text": weather_text}
+                else:
+                    return {"type": "text", "text": "抱歉，目前無法獲取天氣資訊，請稍後再試。"}
+            
+            # 2️⃣ 檢查是否為穿搭請求
             if self.is_outfit_request(user_input) and wardrobe_items:
                 logger.info("👗 偵測到穿搭請求，執行虛擬試穿。")
 
@@ -510,7 +565,7 @@ class FashionAdvisor:
 
                 if not clothing_dicts:
                     logger.warning("衣櫃圖片 URL 皆為空，無法進行圖片生成，轉為文字建議。")
-                    return self.chat_with_gemini(user_input, wardrobe_items, weather_info, weather_advice)
+                    return self._generate_outfit_fallback_text(user_input, wardrobe_items, weather_info, weather_advice)
 
                 # 🔥 關鍵修改：使用 ImageGenerationService 的生成方法
                 logger.info(f"🛠️ 準備呼叫 img_gen_service.generate_tryon_image()，照片來源: {photo_source}")
@@ -539,17 +594,16 @@ class FashionAdvisor:
                             "text": f"好的，這是為您生成的穿搭建議\n📸 照片來源: {photo_source}"
                         }
                     else:
-                        logger.error("虛擬試穿成功但 GCS 上傳失敗，轉為一般聊天。")
-                        return self.chat_with_gemini(user_input, wardrobe_items, weather_info, weather_advice)
+                        logger.error("虛擬試穿成功但 GCS 上傳失敗，轉為文字回覆。")
+                        return self._generate_outfit_fallback_text(user_input, wardrobe_items, weather_info, weather_advice)
                 else:
-                    logger.error(f"虛擬試穿失敗: {generation_result.get('error', '未知錯誤')}，轉為一般聊天。")
-                    chat_response = self.chat_with_gemini(user_input, wardrobe_items, weather_info, weather_advice)
-                    error_text = f"⚠️ 虛擬穿搭圖片生成失敗（{generation_result.get('error', '未知錯誤')}）。我將提供文字建議代替。\n\n"
-                    chat_response["text"] = error_text + chat_response.get("text", "")
-                    return chat_response
-                    
-            # 如果非穿搭需求或衣櫃為空，進行一般聊天
+                    logger.error(f"虛擬試穿失敗: {generation_result.get('error', '未知錯誤')}，轉為文字回覆。")
+                    return self._generate_outfit_fallback_text(user_input, wardrobe_items, weather_info, weather_advice)
+            
+            # 3️⃣ 其他問題：調用 Gemini 生成智能文字回覆
+            logger.info("💬 非穿搭/天氣請求，調用 Gemini 生成智能回覆。")
             return self.chat_with_gemini(user_input, wardrobe_items, weather_info, weather_advice)
+            
         except Exception as e:
             logger.error(f"FashionAdvisor 處理錯誤: {str(e)}", exc_info=True)
             return {"type": "text", "text": f"服務器內部錯誤：{str(e)}"}
