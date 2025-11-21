@@ -36,7 +36,7 @@ class ChatRequest(BaseModel):
     user_image_data: Optional[str] = None # 根據您的需求添加其他欄位
 
 @router.post("/")
-def get_outfit_recommendation(
+async def get_outfit_recommendation(
     payload: ChatRequest,
     request: Request,
     db: Session = Depends(get_db)
@@ -84,7 +84,7 @@ def get_outfit_recommendation(
         raise HTTPException(status_code=400, detail="缺少 user_input")
         
     try:
-        result = advisor.process_user_input(
+        result = await advisor.process_user_input(
             user_id=user_id,                          # 傳入從依賴注入中獲取的 user_id
             user_input=user_input, 
             user_image_data=user_image_data

@@ -76,7 +76,7 @@ def gemini_classify_image(image_path: str) -> dict:
         base64_image = compress_image_for_gemini(image_path)
 
         # 使用正確的 Gemini API 方法
-        model = GenerativeModel("gemini-2.5-flash")
+        model = GenerativeModel("gemini-2.5-flash-image")  # 替換為正確的模型名稱
         
         prompt = """請分析以下衣物圖片，並回傳 JSON 格式的結果。
 

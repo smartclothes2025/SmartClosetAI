@@ -13,11 +13,15 @@ from PIL import Image
 import json
 import logging
 from sqlalchemy.orm import Session
+from datetime import datetime
 
 # Import our image generation service
 from app.services.image_generation import image_service
 from app.core.db import get_db
 from app.models.auth import User
+from app.models.outfit import Outfit
+from app.models.wardrobe import WardrobeItem
+from app.services.storage import upload_file_to_gcs_from_bytes, generate_signed_url_from_gcs_uri
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -256,6 +260,128 @@ async def generate_virtual_fitting(
         raise HTTPException(status_code=500, detail=f"生成失敗: {str(e)}")
 
 
+
+
+class SaveOutfitRequest(BaseModel):
+    """保存穿搭的請求資料。
+    - worn_date: YYYY-MM-DD
+    - file_name: 前端輸入的檔名（不含副檔名）
+    - image_data: base64 或 data URL（data:image/...;base64,xxxx）
+    - item_ids: 參與生成的衣物 ID 列表（可選）
+    """
+    worn_date: str
+    file_name: str
+    image_data: str
+    item_ids: Optional[List[int]] = []
+    is_ai_generated: bool = True
+
+
+class SaveOutfitResponse(BaseModel):
+    success: bool
+    outfit_id: int
+    image_url: str  # GCS URI
+    signed_url: Optional[str] = None
+
+
+OUTFIT_BUCKET_NAME = os.getenv("OUTFIT_GCS_BUCKET", "smartclothes_outfit")
+
+
+@router.post("/save-outfit", response_model=SaveOutfitResponse)
+async def save_outfit_from_virtual_fitting(
+    payload: SaveOutfitRequest,
+    current_user: User = Depends(get_current_user_from_header),
+    db: Session = Depends(get_db)
+):
+    """
+    將前端的虛擬試衣結果保存到 GCS 與資料庫。
+
+    GCS 目的路徑：smartclothes_outfit/{user_id}/{file_name}.jpg
+    DB：建立一筆 `Outfit`，並可選擇關聯衣物。
+    """
+    try:
+        # 解析日期
+        try:
+            worn_date_obj = datetime.strptime(payload.worn_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="worn_date 需為 YYYY-MM-DD 格式")
+
+        # 解析圖片資料（支援 data URL 或純 base64）
+        img_b64 = payload.image_data
+        if img_b64.startswith("data:image"):
+            img_b64 = img_b64.split(",", 1)[1] if "," in img_b64 else img_b64
+
+        try:
+            raw_bytes = base64.b64decode(img_b64)
+        except Exception:
+            raise HTTPException(status_code=400, detail="image_data 非有效 base64")
+
+        # 轉為 JPEG bytes 以符合 .jpg 存檔
+        try:
+            im = Image.open(BytesIO(raw_bytes))
+            if im.mode != "RGB":
+                im = im.convert("RGB")
+            buf = BytesIO()
+            im.save(buf, format="JPEG", quality=90)
+            jpeg_bytes = buf.getvalue()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"圖片處理失敗: {e}")
+
+        # 整理安全檔名
+        name = (payload.file_name or "outfit").strip()
+        safe_name = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in name)
+        if not safe_name:
+            safe_name = "outfit"
+
+        user_id_str = str(current_user.id)
+        gcs_blob_path = f"{user_id_str}/{safe_name}.jpg"
+
+        # 上傳到 GCS 指定 bucket
+        gcs_uri = upload_file_to_gcs_from_bytes(
+            file_bytes=jpeg_bytes,
+            destination_blob_name=gcs_blob_path,
+            mime_type="image/jpeg",
+            bucket_name=OUTFIT_BUCKET_NAME,
+            public=False,
+        )
+
+        # 寫入資料庫（Outfit）
+        outfit = Outfit(
+            user_id=current_user.id,
+            worn_date=worn_date_obj,
+            image_url=gcs_uri,
+            is_ai_generated=payload.is_ai_generated,
+            is_complete=False,
+        )
+
+        # 關聯衣物（若提供）
+        if payload.item_ids:
+            items = db.query(WardrobeItem).filter(WardrobeItem.id.in_(payload.item_ids)).all()
+            outfit.items = items
+
+        db.add(outfit)
+        db.commit()
+        db.refresh(outfit)
+
+        # 可選：回傳簽名 URL 供立即顯示
+        signed_url = None
+        try:
+            signed_url = generate_signed_url_from_gcs_uri(gcs_uri)
+        except Exception:
+            signed_url = None
+
+        return SaveOutfitResponse(
+            success=True,
+            outfit_id=outfit.id,
+            image_url=gcs_uri,
+            signed_url=signed_url,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"保存穿搭失敗: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"保存穿搭失敗: {e}")
 
 
 @router.post("/generate-with-photo")

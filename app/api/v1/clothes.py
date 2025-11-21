@@ -389,6 +389,10 @@ def list_clothes(
                 "daysInactive": days,
                 "owner_display_name": item.user.display_name if item.user else "",
                 "user_id": item.user_id,
+                "tags": item.tags or [],
+                "attributes": item.attributes or {},
+                "style": item.style or "",
+                "brand": item.brand or "",
                 "updated_at": item.updated_at.isoformat() if item.updated_at else None,
                 "created_at": item.created_at.isoformat() if item.created_at else None,
             })
@@ -437,6 +441,8 @@ def get_clothes_item(
             "owner_display_name": item.user.display_name if item.user else "",
             "tags": item.tags or [],
             "attributes": item.attributes or {},
+            "style": item.style or "",
+            "brand": item.brand or "",
             "updated_at": item.updated_at.isoformat() if item.updated_at else None,
             "created_at": item.created_at.isoformat() if item.created_at else None,
         }

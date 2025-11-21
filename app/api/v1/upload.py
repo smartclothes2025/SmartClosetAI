@@ -108,6 +108,8 @@ async def upload_image(
     name: str = Form(""),
     color: str = Form(""),
     style: str = Form(""),
+    material: str = Form(""),
+    size: str = Form(""),
     tags: str = Form("[]"),
     attributes: str = Form("{}"),
     remove_bg: str = Form("0"),    # "1" 開啟去背
@@ -343,17 +345,25 @@ async def upload_image(
             if not style_val:
                 style_val = style_from_attr
 
+            # 將 material 和 size 存入 attributes
+            material_val = material or ""
+            size_val = size or ""
+            if material_val:
+                current_attr["material"] = material_val
+            if size_val:
+                current_attr["size"] = size_val
+
             # 附帶狀態
             current_attr["bg_removed"] = is_bg_removed
             if ai_detected_data:
-                 current_attr.update({
+                current_attr.update({
                     "ai_category": ai_detected_data.get("category"),
                     "ai_colors": ai_detected_data.get("colors", []),
                     "ai_style": ai_detected_data.get("style"),
                     "ai_material": ai_detected_data.get("material"),
                     "ai_occasion": ai_detected_data.get("occasion"),
                     "ai_size": ai_detected_data.get("size"),
-                 })
+                })
             
             # DB 儲存 GCS URI，API 返回簽名 URL
             cover_url_db_final = gcs_uri
@@ -443,6 +453,8 @@ async def upload_clothes_alias(
     name: str = Form(""),
     color: str = Form(""),
     style: str = Form(""),
+    material: str = Form(""),
+    size: str = Form(""),
     tags: str = Form("[]"),
     attributes: str = Form("{}"),
     remove_bg: str = Form("0"),
@@ -458,6 +470,8 @@ async def upload_clothes_alias(
         name=name,
         color=color,
         style=style,
+        material=material,
+        size=size,
         tags=tags,
         attributes=attributes,
         remove_bg=remove_bg,

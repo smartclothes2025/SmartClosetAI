@@ -109,7 +109,7 @@ class ImageGenerationService:
                 "prompt": prompt
             }
     
-    def _download_image(self, img_url: str) -> bytes:
+    async def _download_image(self, img_url: str) -> bytes:
         """
         下載圖片，支援 HTTP URL 和 GCS URI
         
@@ -248,6 +248,7 @@ Generate a new, single, photorealistic image that looks like a seamless edit of 
    - **DO NOT** beautify, smooth, stylize, or model the face. The result must look like the user, **NOT** a professional model.
    - **GENDER LOCK**: The person generated must have the same gender as Image #1.
    - **PRIORITIZE FACE MATCHING ABOVE ALL OTHER FACTORS.**
+   - **FINAL OUTPUT FORMAT:** The final output **MUST BE a single image part** (PNG or JPEG) that contains the virtual try-on result. **DO NOT output text** except for the image part itself.
 
 2. **GENDER ACCURACY** 🔴 CRITICAL:
    - If Image #1 shows a MALE person → Generate a MALE person
@@ -324,6 +325,7 @@ Now generate the virtual try-on image following ALL requirements above."""
    - 簡潔的背景(純色或簡約場景)
    - 柔和自然的光線,突顯服裝質感
    - 高清晰度,專業攝影品質
+   - 最終輸出格式**: 最終輸出 **必須是一個單獨的圖片部分 (PNG 或 JPEG)**，包含虛擬試穿結果。
 
 5. **用戶額外需求**: {prompt}
 
@@ -387,7 +389,7 @@ Now generate the virtual try-on image following ALL requirements above."""
                         logger.info(f"   URL: {img_url}")
                         
                         # 下載圖片（支援 HTTP 和 GCS URI）
-                        img_data = self._download_image(img_url)
+                        img_data = await self._download_image(img_url)
                         
                         # 檢查是否為有效圖片
                         if len(img_data) < 100:
@@ -636,7 +638,7 @@ Now generate the virtual try-on image following ALL requirements above."""
             logger.info(f"📥 正在從 GCS 下載用戶頭貼: {gcs_uri}")
             
             # 使用現有的 _download_image 方法下載
-            img_data = self._download_image(gcs_uri)
+            img_data = await self._download_image(gcs_uri)
             
             if not img_data or len(img_data) < 100:
                 logger.warning(f"下載的圖片數據太小或為空: {len(img_data) if img_data else 0} bytes")

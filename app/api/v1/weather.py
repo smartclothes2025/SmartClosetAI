@@ -19,10 +19,10 @@ router = APIRouter(
 )
 
 # 讀取 API key
-WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
-if not WEATHER_API_KEY:
-    logging.error("未設定 WEATHER_API_KEY 環境變數！")
-    WEATHER_API_KEY = "your-fallback-weather-api-key-for-dev"
+OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
+if not OPENWEATHER_API_KEY:
+    logging.error("未設定OPENWEATHER_API_KEY 環境變數！")
+    OPENWEATHER_API_KEY = "your-fallback-weather-api-key-for-dev"
 
 WEATHER_API_URL = "http://api.openweathermap.org/data/2.5/weather"
 
@@ -110,22 +110,22 @@ async def get_current_weather(
 ):
     """
     支援：
-      - /current?city=Taipei
-      - /current?lat=25.03&lon=121.56
+      - /current?city=Taoyuan
+      - /current?lat=25.03&lon=1236
     至少要傳 city 或 lat+lon
     """
     if lat is not None and lon is not None:
         params = {
             "lat": lat,
             "lon": lon,
-            "appid": WEATHER_API_KEY,
+            "appid":OPENWEATHER_API_KEY,
             "units": "metric",
             "lang": "zh_tw",
         }
     elif city:
         params = {
             "q": city,
-            "appid": WEATHER_API_KEY,
+            "appid":OPENWEATHER_API_KEY,
             "units": "metric",
             "lang": "zh_tw",
         }
@@ -144,7 +144,7 @@ async def get_by_coord(lat: float, lon: float):
     params = {
         "lat": lat,
         "lon": lon,
-        "appid": WEATHER_API_KEY,
+        "appid":OPENWEATHER_API_KEY,
         "units": "metric",
         "lang": "zh_tw",
     }
@@ -163,7 +163,7 @@ async def get_outfit_suggestion_for_user(
     """
     params = {
         "q": city,
-        "appid": WEATHER_API_KEY,
+        "appid":OPENWEATHER_API_KEY,
         "units": "metric",
         "lang": "zh_tw",
     }
