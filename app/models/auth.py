@@ -30,3 +30,6 @@ class User(Base):
     
     # 用户的通知
     notifications = relationship("Notification", back_populates="user")
+    
+    # 用户的推薦記錄
+    recommendations = relationship("Recommendation", back_populates="user")

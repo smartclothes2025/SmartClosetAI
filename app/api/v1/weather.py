@@ -136,6 +136,38 @@ async def get_current_weather(
     return _build_weather_response(data, fallback_city=city)
 
 
+@router.get("/today", response_model=WeatherResponse)
+async def get_today_weather(
+    city: str = "Taoyuan",
+    lat: float | None = None,
+    lon: float | None = None,
+):
+    """
+    統一的今日天氣 API
+    全站使用此 endpoint 以確保天氣資訊一致
+    
+    預設城市：Taoyuan
+    """
+    if lat is not None and lon is not None:
+        params = {
+            "lat": lat,
+            "lon": lon,
+            "appid":OPENWEATHER_API_KEY,
+            "units": "metric",
+            "lang": "zh_tw",
+        }
+    else:
+        params = {
+            "q": city,
+            "appid":OPENWEATHER_API_KEY,
+            "units": "metric",
+            "lang": "zh_tw",
+        }
+    
+    data = await _fetch_weather_from_openweathermap(params)
+    return _build_weather_response(data, fallback_city=city)
+
+
 @router.get("/by-coord", response_model=WeatherResponse)
 async def get_by_coord(lat: float, lon: float):
     """

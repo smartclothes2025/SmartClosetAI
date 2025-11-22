@@ -58,6 +58,35 @@ def list_store_items(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/palette/{color_family}")
+def get_palette_items(
+    color_family: str,
+    gender: Literal["women", "men"] = Query(..., description="性別篩選"),
+    limit: int = Query(12, ge=1, le=100, description="限制數量"),
+) -> List[Dict[str, Any]]:
+    """
+    取得指定色系的商品
+    
+    - **color_family**: 色系（neutral/khaki/blue/pink/green）
+    - **gender**: 性別（women/men）
+    - **limit**: 限制回傳數量
+    """
+    try:
+        store_service = get_store_service()
+        items = store_service.get_items(
+            gender=gender,
+            palette=color_family,
+            limit=limit,
+        )
+        
+        logger.info(f"[store] 查詢色系商品: color_family={color_family}, gender={gender}, 回傳 {len(items)} 件")
+        return items
+    
+    except Exception as e:
+        logger.error(f"[store] 查詢色系商品失敗: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/palettes")
 def get_all_palettes(
     gender: Literal["women", "men"] = Query(..., description="性別篩選"),

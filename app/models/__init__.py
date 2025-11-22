@@ -5,3 +5,5 @@ from .auth import User
 from app.models.wardrobe import WardrobeItem
 from .outfit import Outfit
 from .notification import Notification
+from .recommendation import Recommendation
+from .daily_color_outfit import DailyColorOutfit
