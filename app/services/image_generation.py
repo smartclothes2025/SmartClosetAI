@@ -598,12 +598,15 @@ Now generate the virtual try-on image following ALL requirements above."""
         """
         從 GCS 下載用戶頭貼並轉換為 base64
         
+        🔥 關鍵修改：直接返回原始圖片的 base64，不進行任何壓縮或格式轉換
+        這樣可以保持最高的臉部辨識精度，確保臉部交換技術能正確識別用戶的臉部特徵
+        
         Args:
             picture_uri: 用戶頭貼的 GCS URI 或完整路徑
             user_id: 用戶 ID
             
         Returns:
-            Optional[str]: base64 編碼的圖片，如果失敗則返回 None
+            Optional[str]: base64 編碼的圖片（原始格式，未壓縮），如果失敗則返回 None
         """
         try:
             # 檢查 GCS 是否可用
@@ -629,7 +632,7 @@ Now generate the virtual try-on image following ALL requirements above."""
                 
                 gcs_uri = f"gs://{bucket_name}/{blob_path}"
             
-            logger.info(f"📥 正在從 GCS 下載用戶頭貼: {gcs_uri}")
+            logger.info(f"📥 正在從 GCS 下載用戶頭貼（原始格式，不壓縮）: {gcs_uri}")
             
             # 使用現有的 _download_image 方法下載
             img_data = await self._download_image(gcs_uri)
@@ -638,20 +641,20 @@ Now generate the virtual try-on image following ALL requirements above."""
                 logger.warning(f"下載的圖片數據太小或為空: {len(img_data) if img_data else 0} bytes")
                 return None
             
-            # 驗證是否為有效圖片
+            # 🔥 關鍵修改：只做基本驗證，不重新編碼或壓縮
             try:
+                # 驗證是否為有效圖片
                 img = Image.open(BytesIO(img_data))
+                logger.info(f"   ✅ 圖片驗證通過 - 格式: {img.format}, 尺寸: {img.size[0]}x{img.size[1]}, 模式: {img.mode}")
                 
-                # 轉換為 RGB
-                if img.mode != 'RGB':
-                    img = img.convert('RGB')
+                # 🔥 直接使用原始數據轉換為 base64，不重新保存或壓縮
+                img_base64 = base64.b64encode(img_data).decode('utf-8')
                 
-                # 轉換為 base64
-                img_byte_arr = BytesIO()
-                img.save(img_byte_arr, format='JPEG', quality=95)
-                img_base64 = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
+                logger.info(f"✅ 成功下載用戶頭貼（原始格式，未壓縮）")
+                logger.info(f"   原始大小: {len(img_data) / 1024:.1f} KB")
+                logger.info(f"   Base64 長度: {len(img_base64)} chars")
+                logger.info(f"   🎯 保持原始品質，確保臉部辨識精度最高")
                 
-                logger.info(f"✅ 成功下載並轉換用戶頭貼 (大小: {len(img_data) / 1024:.1f} KB)")
                 return img_base64
                 
             except Exception as img_error:

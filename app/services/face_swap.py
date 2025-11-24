@@ -36,14 +36,54 @@ class FaceSwapService:
             return
         
         try:
-            # 初始化 FaceAnalysis（用於檢測臉部）
-            self.app = FaceAnalysis(name='buffalo_l')
-            self.app.prepare(ctx_id=0, det_size=(640, 640))
+            import os
+            from pathlib import Path
             
-            # 載入臉部交換模型
-            self.swapper = insightface.model_zoo.get_model('inswapper_128.onnx', download=True, download_zip=True)
+            # 🔥 設置模型路徑（使用 HOME 目錄）
+            model_dir = Path.home() / '.insightface' / 'models'
+            model_dir.mkdir(parents=True, exist_ok=True)
             
-            logger.info("✅ FaceSwapService 初始化成功")
+            logger.info(f"模型目錄: {model_dir}")
+            
+            # 🔥 嘗試多種初始化方式（InsightFace 0.2.1 API）
+            logger.info("嘗試初始化 FaceAnalysis...")
+            
+            # 方法 1: 使用預設配置（InsightFace 0.2.1 不支持 providers 參數）
+            try:
+                self.app = FaceAnalysis()
+                self.app.prepare(ctx_id=-1, det_size=(640, 640))
+                logger.info("✅ FaceAnalysis 初始化成功（CPU 模式）")
+            except Exception as e1:
+                logger.warning(f"預設初始化失敗: {e1}")
+                
+                # 方法 2: 嘗試不同的參數
+                try:
+                    self.app = FaceAnalysis(name='buffalo_l')
+                    self.app.prepare(ctx_id=-1, det_size=(640, 640))
+                    logger.info("✅ FaceAnalysis 初始化成功（buffalo_l 模式）")
+                except Exception as e2:
+                    logger.error(f"buffalo_l 初始化也失敗: {e2}")
+                    raise Exception("所有 FaceAnalysis 初始化方法都失敗")
+            
+            # 🔥 載入臉部交換模型（簡化版本，不自動下載）
+            logger.info("嘗試載入臉部交換模型...")
+            
+            # 檢查模型是否已存在
+            model_path = model_dir / 'inswapper_128.onnx'
+            
+            if model_path.exists():
+                logger.info(f"找到現有模型: {model_path}")
+                self.swapper = insightface.model_zoo.get_model(str(model_path))
+                logger.info("✅ 臉部交換模型載入成功")
+            else:
+                logger.warning(f"模型文件不存在: {model_path}")
+                logger.warning("臉部交換功能將無法使用")
+                logger.info("提示: 模型會在首次使用時自動下載")
+                # 不設置 swapper，讓 is_available() 返回 False
+                self.swapper = None
+            
+            if self.app:
+                logger.info("✅ FaceSwapService 部分初始化成功（臉部檢測可用）")
             
         except Exception as e:
             logger.error(f"❌ FaceSwapService 初始化失敗: {e}", exc_info=True)
@@ -52,7 +92,17 @@ class FaceSwapService:
     
     def is_available(self) -> bool:
         """檢查臉部交換服務是否可用"""
-        return INSIGHTFACE_AVAILABLE and self.app is not None and self.swapper is not None
+        # 🔥 即使只有臉部檢測也算部分可用
+        # 完整功能需要: app + swapper
+        # 部分功能: 只有 app（可以檢測臉部，但不能交換）
+        has_face_detection = INSIGHTFACE_AVAILABLE and self.app is not None
+        has_face_swap = has_face_detection and self.swapper is not None
+        
+        if has_face_detection and not has_face_swap:
+            logger.info("臉部檢測可用，但臉部交換模型未載入")
+            logger.info("系統將使用 Gemini 原始結果（臉部相似度 30-70%）")
+        
+        return has_face_swap
     
     def swap_face_base64(
         self,

@@ -68,7 +68,7 @@ class WeatherService:
         else:
             # 預設桃園
             params = {
-                "q": "Taoyuan",
+                "q": "Tainan",
                 "appid": OPENWEATHER_API_KEY,
                 "units": "metric",
                 "lang": "zh_tw",

@@ -23,12 +23,12 @@ class WeatherService:
         if not self.api_key:
             logger.warning("⚠️ OPENWEATHER_API_KEY 未設定，天氣功能將無法使用")
     
-    async def get_weather_by_city(self, city: str = "Taoyuan", country_code: str = "TW") -> Optional[Dict[str, Any]]:
+    async def get_weather_by_city(self, city: str = None, country_code: str = "TW") -> Optional[Dict[str, Any]]:
         """
         根據城市名稱獲取天氣資訊
         
         Args:
-            city: 城市名稱（預設：Taoyuan）
+            city: 城市名稱
             country_code: 國家代碼（預設：TW）
             
         Returns:
@@ -38,15 +38,19 @@ class WeatherService:
             logger.error("❌ 無法獲取天氣：API Key 未設定")
             return None
         
+        
+        target_city = city if city else "Tainan"
+        
+        
         try:
             params = {
-                "q": f"{city},{country_code}",
+                "q": f"{target_city},{country_code}",
                 "appid": self.api_key,
                 "units": "metric",  # 使用攝氏溫度
                 "lang": "zh_tw"     # 繁體中文
             }
             
-            logger.info(f"🌤️ 正在獲取 {city} 的天氣資訊...")
+            logger.info(f"🌤️ 正在獲取 {target_city}的天氣資訊...")
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(self.base_url, params=params)
                 response.raise_for_status()

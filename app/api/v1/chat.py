@@ -6,6 +6,7 @@ import logging
 from app.models.auth import User
 from app.core.db import get_db
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from pydantic import BaseModel
 import uuid as _uuid
 LOG_FILE_PATH = 'smartcloset_activity.log'
@@ -41,7 +42,10 @@ def ping():
 
 class ChatRequest(BaseModel):
     user_input: str
-    user_image_data: Optional[str] = None # 根據您的需求添加其他欄位
+    user_image_data: Optional[str] = None 
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    city: Optional[str] = None
 
 @router.post("/")
 async def get_outfit_recommendation(
@@ -96,11 +100,52 @@ async def get_outfit_recommendation(
         user_picture_uri = current_user.picture if hasattr(current_user, 'picture') else None
         logger.info(f"📸 用戶頭貼 URI: {user_picture_uri}")
         
+        # 🔥 獲取用戶性別
+        user_gender = None
+        if hasattr(current_user, "gender") and getattr(current_user, "gender", None):
+            raw_gender = getattr(current_user, "gender")
+            # 正規化性別
+            v = str(raw_gender).strip().lower()
+            if any(token in v for token in ["女", "female", "woman", "women", "girl"]):
+                user_gender = "women"
+            elif any(token in v for token in ["男", "male", "man", "men", "boy"]):
+                user_gender = "men"
+            else:
+                user_gender = "women"  # 預設女性
+        else:
+            # 從 body_metrics 表獲取性別
+            try:
+                from sqlalchemy import text
+                row = db.execute(
+                    text(
+                        "SELECT sex FROM body_metrics "
+                        "WHERE user_id = :uid "
+                        "ORDER BY recorded_at DESC "
+                        "LIMIT 1"
+                    ),
+                    {"uid": str(current_user.id)},
+                ).mappings().first()
+                if row:
+                    raw_sex = row.get("sex")
+                    v = str(raw_sex).strip().lower()
+                    if any(token in v for token in ["女", "female", "woman", "women", "girl"]):
+                        user_gender = "women"
+                    elif any(token in v for token in ["男", "male", "man", "men", "boy"]):
+                        user_gender = "men"
+                    else:
+                        user_gender = "women"
+            except Exception as e:
+                logger.warning(f"無法從 body_metrics 獲取性別: {e}")
+                user_gender = "women"  # 預設女性
+        
+        logger.info(f"👤 用戶性別: {user_gender}")
+        
         result = await advisor.process_user_input(
             user_id=user_id,
             user_input=user_input, 
             user_image_data=user_image_data,
-            user_picture_uri=user_picture_uri  # 傳遞用戶頭貼 URI
+            user_picture_uri=user_picture_uri,
+            user_gender=user_gender  # 🔥 傳遞用戶性別
         )
             
         logger.info(f"Advisor 返回結果: {result}")

@@ -110,7 +110,7 @@ async def get_current_weather(
 ):
     """
     支援：
-      - /current?city=Taoyuan
+      - /current?city=None
       - /current?lat=25.03&lon=1236
     至少要傳 city 或 lat+lon
     """
@@ -138,15 +138,14 @@ async def get_current_weather(
 
 @router.get("/today", response_model=WeatherResponse)
 async def get_today_weather(
-    city: str = "Taoyuan",
+    city: str = None,
     lat: float | None = None,
     lon: float | None = None,
 ):
     """
     統一的今日天氣 API
     全站使用此 endpoint 以確保天氣資訊一致
-    
-    預設城市：Taoyuan
+
     """
     if lat is not None and lon is not None:
         params = {

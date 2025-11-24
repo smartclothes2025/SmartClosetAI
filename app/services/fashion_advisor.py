@@ -11,6 +11,7 @@ import asyncio
 # 導入 PIL Image 模組
 from PIL import Image as PILImage
 from PIL import Image  # 用於 download_user_photo_from_gcs
+import httpx # 🔥 為了實現 IP-to-Geo 服務，需要導入 httpx
 
 from .image_generation import image_service as img_gen_service
 
@@ -176,7 +177,6 @@ class FashionAdvisor:
             return []
 
             
-
         # 根據您的截圖，用戶的衣物圖片路徑結構應為：
 
         # {GCS_BUCKET_NAME}/wardrobe/{USER_ID}/{CATEGORY}/{filename}.jpg
@@ -337,7 +337,6 @@ class FashionAdvisor:
             response: GenerationResponse = self.text_model.generate_content(full_prompt)
 
                         
-
             # 檢查是否有候選回應以及內容
 
             if not response.candidates or not response.candidates[0].content.parts:
@@ -356,11 +355,10 @@ class FashionAdvisor:
                 # 返回友善的固定回覆，不顯示錯誤訊息
                 return {
                     "type": "text",
-                    "text": "我是您的智慧穿搭助手！您可以問我：\n\n👗 '今天穿什麼？'\n🌤️ '今天天氣如何？'\n💡 '推薦穿搭'\n\n我會根據您的衣櫃和天氣為您提供建議！"
+                    "text": "抱歉，我無法理解你說，請再試一次！您可以問我：\n\n👗 '今天穿什麼？'\n🌤️ '今天天氣如何？'\n💡 '推薦穿搭'\n\n我會根據您的衣櫃和天氣為您提供建議！"
                 }
             logger.error(f"與 Gemini 聊天時發生錯誤: {str(e)}", exc_info=True)
             return {"type": "text", "text": f"服務器內部錯誤：{str(e)}"}
-
 
 
     
@@ -370,26 +368,26 @@ class FashionAdvisor:
         根據前端傳入的精確 ID，從 GCS 檢查並獲取衣物的完整對象（包含 GCS URL）。
         """
         all_wardrobe_items = self.get_wardrobe_items(user_id) # 獲取所有衣物
-        selected_ids = {item.id for item in selected_items} # 假設前端傳入的 item 有 id 欄位
-
+        # 假設前端傳入的 item 有 id 欄位，但此處未使用，保留原有邏輯
+        # selected_ids = {item.id for item in selected_items} 
 
         final_items = []
         for item_in in selected_items:
             # 找到與 item_in 匹配的 GCS 上的真實衣物對象 (通常透過 ID)
-            matching_item = next((item for item in all_wardrobe_items if item.name == item_in.name and item.category == item_in.category), None)
+            matching_item = next((item for item in all_wardrobe_items if item.name == item_in['name'] and item.category == item_in['category']), None)
 
             if matching_item:
                  final_items.append(matching_item)
             else:
                  # 如果找不到 GCS URL，至少保留其文字資訊，供 Gemini 參考
                  final_items.append(ClothingItem(
-                     category=item_in.category,
-                     name=item_in.name,
+                     category=item_in['category'],
+                     name=item_in['name'],
                      cover_image_url=None # 無圖片 URL
                  ))
         return final_items
 
-    async def process_fitting_request(self, user_id: str, user_input: str, selected_items: List[dict], user_picture_uri: Optional[str] = None) -> Dict[str, Any]:
+    async def process_fitting_request(self, user_id: str, user_input: str, selected_items: List[dict], user_picture_uri: Optional[str] = None, user_gender: Optional[str] = None) -> Dict[str, Any]:
         """
         專門用於虛擬試衣頁面，根據精確選擇的衣物生成圖片。
         """
@@ -409,24 +407,41 @@ class FashionAdvisor:
              return {"type": "text", "text": "所選衣物均無有效的圖片URL，無法進行虛擬試穿。"}
 
 
-        # 🔥 2. 下載用戶頭貼（如果有）
+        # 🔥 2. 下載用戶頭貼（如果有）- 使用與虛擬試衣完全相同的邏輯
         user_photo_base64 = None
-        if user_picture_uri:
-            logger.info(f"🔄 虛擬試衣頁面：開始下載用戶頭貼: {user_picture_uri}")
+        if user_picture_uri and user_picture_uri.strip():
+            logger.info(f"📸 虛擬試衣頁面：準備下載用戶頭貼")
+            logger.info(f"    原始 URI: '{user_picture_uri}'")
+            
             try:
-                user_photo_base64 = await img_gen_service.download_user_photo_from_gcs(
-                    picture_uri=user_picture_uri,
-                    user_id=user_id
-                )
+                # 🔥 使用與虛擬試衣完全相同的調用方式
+                if user_picture_uri.startswith("gs://"):
+                    logger.info("    檢測到完整 GCS URI")
+                    user_photo_base64 = await img_gen_service.download_user_photo_from_gcs(
+                        user_picture_uri,  # 位置參數 1
+                        str(user_id)       # 位置參數 2
+                    )
+                else:
+                    logger.info("    檢測到相對路徑")
+                    user_photo_base64 = await img_gen_service.download_user_photo_from_gcs(
+                        user_picture_uri,
+                        str(user_id)
+                    )
                 
                 if user_photo_base64:
-                    logger.info(f"✅ 虛擬試衣頁面：成功載入用戶頭貼 (base64 長度: {len(user_photo_base64)} chars)")
+                    logger.info(f"✅ 虛擬試衣頁面：成功載入用戶頭貼！")
+                    logger.info(f"    Base64 長度: {len(user_photo_base64)} chars")
                 else:
-                    logger.warning("⚠️ 虛擬試衣頁面：用戶頭貼下載返回 None，將使用預設模特兒")
+                    logger.error(f"❌ 虛擬試衣頁面：用戶頭貼下載返回 None")
+                    logger.error(f"    URI: '{user_picture_uri}'")
+                    
             except Exception as e:
-                logger.error(f"❌ 虛擬試衣頁面：用戶頭貼下載失敗: {str(e)}", exc_info=True)
+                logger.error(f"❌ 虛擬試衣頁面：用戶頭貼下載失敗")
+                logger.error(f"    URI: '{user_picture_uri}'")
+                logger.error(f"    錯誤: {str(e)}", exc_info=True)
         else:
-            logger.info("ℹ️ 虛擬試衣頁面：未提供用戶頭貼 URI，將使用預設模特兒")
+            logger.warning("⚠️ 虛擬試衣頁面：未提供用戶頭貼 URI，將使用預設模特兒")
+            logger.warning(f"    user_picture_uri: '{user_picture_uri}'")
 
         # 🔥 3. 使用 ImageGenerationService 生成圖片
         logger.info(f"🛠️ 虛擬試衣頁面：準備呼叫 img_gen_service.generate_tryon_image()")
@@ -470,70 +485,130 @@ class FashionAdvisor:
             return chat_response
 
 
+    # 🔥 保留的自動城市偵測方法，使用 httpx (假設您已安裝此庫)
+    async def _get_city_from_ip(self) -> str:
+        """
+        實作自動偵測城市名稱的邏輯，呼叫一個 IP 地理位置 API。
+        """
+        try:
+            # 使用一個公共的 IP-to-Geo 服務來獲取當前伺服器（或代理）的地理位置
+            async with httpx.AsyncClient(timeout=5) as client:
+                response = await client.get("https://ipinfo.io/json")
+                response.raise_for_status() # 如果響應狀態碼不是 200，則拋出異常
+                data = response.json()
+                city = data.get("city", "Tainan") # 獲取城市名稱，如果失敗則預設 'Tainan'
 
+                logger.info(f"✅ IP-to-Geo 服務自動偵測到城市: {city}")
+                return city
+        except Exception as e:
+            logger.error(f"❌ IP-to-Geo 服務偵測失敗: {e}", exc_info=True)
+            # 由於您位於台灣，預設為台北會比桃園合理
+            return "Tainan"# 失敗時的預設城市
 
-    async def process_user_input(self, user_id: str, user_input: str, user_image_data: Optional[str] = None, user_picture_uri: Optional[str] = None, city: str = "Taoyuan", country_code: str = "TW") -> Dict[str, Any]:
+    
+    # 🔥 保留的 process_user_input 方法，實現自動城市偵測
+    async def process_user_input(self, user_id: str, user_input: str, user_image_data: Optional[str] = None, user_picture_uri: Optional[str] = None, user_gender: Optional[str] = None, city: str = None, country_code: str = "TW") -> Dict[str, Any]:
         """
         處理使用者輸入，如果偵測到穿搭請求，則嘗試生成圖片；否則進行一般聊天。
-        實現：1. 根據用戶圖片進行虛擬試穿 2. 根據上傳圖片進行虛擬試穿 3. 整合天氣資訊提供穿搭建議
+        現在會自動偵測城市以獲取天氣資訊。
         """
         logger.info(f"開始處理User '{user_id}'的輸入: '{user_input}'，是否有使用者圖片: {bool(user_image_data)}")
         
         # 獲取天氣資訊
         weather_info = None
         weather_advice = ""
+        
+        # 🔥 關鍵修改：自動偵測城市
+        detected_city = await self._get_city_from_ip() 
+        logger.info(f"🌍 自動偵測城市為: {detected_city}")
+
         if weather_service:
             try:
-                weather_info = await weather_service.get_weather_by_city(city, country_code)
+                # 傳遞自動偵測到的城市名稱給 weather_service
+                weather_info = await weather_service.get_weather_by_city(detected_city, country_code) 
+                
                 if weather_info:
                     weather_advice = weather_service.get_weather_based_clothing_advice(weather_info)
                     logger.info(f"🌤️ 天氣資訊已獲取：{weather_info['city']} {weather_info['temperature']}°C {weather_info['weather_description']}")
             except Exception as e:
                 logger.warning(f"獲取天氣資訊失敗: {str(e)}")
 
+
         if not self.genai:
-             logger.critical("Gemini API 未初始化。")
-             return {"type": "text", "text": "嚴重錯誤：圖片生成服務未啟動。"}
+            logger.critical("Gemini API 未初始化。")
+            return {"type": "text", "text": "嚴重錯誤：圖片生成服務未啟動。"}
 
         wardrobe_items = self.get_wardrobe_items(user_id)
-
-
-        # 照片優先級：1. 前端上傳 2. 用戶頭貼 3. 無照片
-        user_photo_base64 = user_image_data
-        photo_source = "上傳照片" if user_image_data else None
-        logger.info("📸 照片狀態檢查:")
-        logger.info(f"   - 前端上傳照片: {'有' if user_image_data else '無'} (長度: {len(user_image_data) if user_image_data else 0} chars)")
-        logger.info(f"   - 用戶頭貼 URI: {user_picture_uri if user_picture_uri else '無'}")
-
-        if not user_photo_base64 and user_picture_uri:
-            logger.info(f"🔄 開始下載用戶頭貼: {user_picture_uri}")
+        
+        # 🔥 照片優先級處理 - 確保正確使用用戶頭貼
+        user_photo_base64 = None
+        photo_source = None
+        
+        # 優先級 1: 前端上傳的照片（最高優先級）
+        if user_image_data:
+            user_photo_base64 = user_image_data
+            photo_source = "前端上傳照片"
+            logger.info(f"✅ 優先級 1: 使用前端上傳照片 (長度: {len(user_image_data)} chars)")
+        
+        # 優先級 2: 用戶頭貼（次要優先級）- 🔥 使用與虛擬試衣完全相同的邏輯
+        elif user_picture_uri and user_picture_uri.strip():
+            logger.info(f"📸 優先級 2: 沒有上傳照片，準備下載用戶頭貼")
+            logger.info(f"    原始 URI: '{user_picture_uri}'")
+            
             try:
-                # 🔥 關鍵修改：使用 ImageGenerationService 的下載方法
-                user_photo_base64 = await img_gen_service.download_user_photo_from_gcs(
-                    picture_uri=user_picture_uri,
-                    user_id=user_id
-                )
+                # 🔥 關鍵修改：使用與虛擬試衣完全相同的調用方式
+                if user_picture_uri.startswith("gs://"):
+                    logger.info("    檢測到完整 GCS URI，直接下載")
+                    user_photo_base64 = await img_gen_service.download_user_photo_from_gcs(
+                        user_picture_uri,  # 位置參數 1：picture_uri
+                        str(user_id)       # 位置參數 2：user_id
+                    )
+                    photo_source = "用戶頭貼 (GCS)"
+                else:
+                    logger.info("    檢測到相對路徑，嘗試下載")
+                    user_photo_base64 = await img_gen_service.download_user_photo_from_gcs(
+                        user_picture_uri,  # 函數內部會自動構建完整路徑
+                        str(user_id)
+                    )
+                    photo_source = "用戶頭貼"
                 
                 if user_photo_base64:
-                    logger.info(f"✅ 使用完整的原始照片，base64 長度: {len(user_photo_base64)} characters")
-                    photo_source = "用戶頭貼"
+                    logger.info(f"✅ 成功下載並使用用戶頭貼！")
+                    logger.info(f"    Base64 長度: {len(user_photo_base64)} chars")
+                    logger.info(f"    Base64 預覽: {user_photo_base64[:50]}...")
                 else:
-                    logger.warning("⚠️ 用戶頭貼下載返回 None")
+                    logger.error(f"❌ 用戶頭貼下載返回 None！")
+                    logger.error(f"    URI: '{user_picture_uri}'")
+                    logger.error(f"    可能原因：GCS 中不存在此文件 或 權限問題")
+                    photo_source = "預設模特兒（頭貼下載失敗）"
+                    
             except Exception as download_error:
-                logger.error(f"❌ 用戶頭貼下載失敗: {str(download_error)}", exc_info=True)
+                logger.error(f"❌ 用戶頭貼下載異常！")
+                logger.error(f"    URI: '{user_picture_uri}'")
+                logger.error(f"    錯誤: {str(download_error)}", exc_info=True)
+                photo_source = "預設模特兒（下載異常）"
         
-        if not photo_source:
-            photo_source = "預設模特兒"
-            logger.warning("⚠️ 沒有可用的用戶照片，將使用預設模特兒")
-        
-        default_model_base64 = await self._generate_default_asian_model()
-
-        logger.info(f"📸 最終照片來源: {photo_source}")
-        logger.info(f"📸 user_photo_base64 是否存在: {'是' if user_photo_base64 else '否'}")
+        # 優先級 3: 預設模特兒（最低優先級）
+        else:
+            logger.warning("⚠️ 優先級 3: 沒有上傳照片也沒有用戶頭貼")
+            logger.warning(f"    user_image_data: {bool(user_image_data)}")
+            logger.warning(f"    user_picture_uri: '{user_picture_uri}'")
+            logger.warning("    將使用預設模特兒")
+            photo_source = "預設模特兒（無頭貼）"
+            
+        # 🔥 最終照片狀態確認 (保留原邏輯)
+        logger.info(f"\n{'='*60}")
+        logger.info(f"📸 最終照片與性別決策:")
+        logger.info(f"    照片來源: {photo_source}")
+        logger.info(f"    是否有用戶照片: {'是' if user_photo_base64 else '否'}")
+        logger.info(f"    用戶性別: {user_gender or '未提供 (預設 women)'}")
         if user_photo_base64:
-            logger.info(f"📊 user_photo_base64 截斷預覽: {user_photo_base64[:40]}...")
-
-
+            logger.info(f"    照片數據長度: {len(user_photo_base64)} characters")
+            logger.info(f"    照片數據預覽: {user_photo_base64[:50]}...")
+            logger.info(f"    ✅ 將使用用戶照片生成個性化穿搭圖")
+        else:
+            logger.info(f"    ⚠️ 將使用預設模特兒（{user_gender or 'women'}）")
+        logger.info(f"{'='*60}\n")
 
         try:
             # 1️⃣ 檢查是否只詢問天氣（不包含穿搭）
@@ -568,7 +643,10 @@ class FashionAdvisor:
                     return self._generate_outfit_fallback_text(user_input, wardrobe_items, weather_info, weather_advice)
 
                 # 🔥 關鍵修改：使用 ImageGenerationService 的生成方法
-                logger.info(f"🛠️ 準備呼叫 img_gen_service.generate_tryon_image()，照片來源: {photo_source}")
+                logger.info(f"🛠️ 準備呼叫 img_gen_service.generate_tryon_image()")
+                logger.info(f"    📸 照片來源: {photo_source}")
+                logger.info(f"    📸 是否傳遞用戶照片: {'是' if user_photo_base64 else '否 (使用預設模特兒)'}")
+
 
                 generation_result = await img_gen_service.generate_tryon_image(
                     prompt=user_input,
@@ -579,6 +657,9 @@ class FashionAdvisor:
                 
                 if generation_result.get("success"):
                     image_base64 = generation_result.get("image_base64")
+                    face_swap_used = generation_result.get("face_swap_used", False)
+                    face_swap_similarity = generation_result.get("face_swap_similarity", 0)
+                    
                     if image_base64:
                         logger.info(f"🖼️ 成功取得生成圖片，長度: {len(image_base64)} characters，開始上傳 GCS。")
                         image_bytes = base64.b64decode(image_base64)
@@ -588,10 +669,17 @@ class FashionAdvisor:
 
                     if generated_image_url:
                         logger.info(f"影像已生成並上傳，URL: {generated_image_url}")
+                        
+                        # 根據是否使用臉部交換生成不同的訊息
+                        if face_swap_used:
+                            response_text = f"好的，這是為您生成的穿搭建議\n📸 照片來源: {photo_source}\n🎭 臉部交換: 已啟用 (相似度: {face_swap_similarity:.0%})"
+                        else:
+                            response_text = f"好的，這是為您生成的穿搭建議\n📸 照片來源: {photo_source}"
+                        
                         return {
                             "type": "image",
                             "url": generated_image_url,
-                            "text": f"好的，這是為您生成的穿搭建議\n📸 照片來源: {photo_source}"
+                            "text": response_text
                         }
                     else:
                         logger.error("虛擬試穿成功但 GCS 上傳失敗，轉為文字回覆。")
@@ -608,39 +696,6 @@ class FashionAdvisor:
             logger.error(f"FashionAdvisor 處理錯誤: {str(e)}", exc_info=True)
             return {"type": "text", "text": f"服務器內部錯誤：{str(e)}"}
 
-
-    async def _generate_default_asian_model(self) -> Optional[str]:
-        """
-        生成一個預設的亞洲女性模特兒全身圖 (用於沒有用戶頭貼時的備用方案)。
-        """
-        try:
-            model = GenerativeModel(model_name=self.image_model_name)
-            prompt_text = (
-                "Generate a photorealistic full-body image of a young Asian female model. "
-                "The model should be in a neutral, relaxed standing pose, looking directly at the camera. "
-                "She should have clear East Asian facial features, such as dark hair, Asian skin tone. "
-                "The background should be a clean white or light gray studio setting. High-resolution, professional studio lighting."
-            )
-            
-            logger.info("✨ 準備生成預設亞洲模特圖...")
-            
-            response = model.generate_content([prompt_text])
-            
-            if response.candidates and response.candidates[0].content.parts:
-                for part in response.candidates[0].content.parts:
-                    if hasattr(part, 'inline_data') and part.inline_data:
-                        base64_image = base64.b64encode(part.inline_data.data).decode('utf-8')
-                        logger.info("✅ 成功生成預設亞洲模特圖。")
-                        return base64_image
-            
-            logger.error("❌ 生成預設亞洲模特圖響應中沒有圖片數據。")
-            return None
-        except Exception as e:
-            logger.error(f"❌ 生成預設亞洲模特圖時發生錯誤: {e}", exc_info=True)
-            return None
-
-
-
-
+    
 # Singleton instance
 image_service = FashionAdvisor()
