@@ -39,7 +39,7 @@ class WeatherService:
             return None
         
         
-        target_city = city if city else "Tainan"
+        target_city = city if city else "Taoyuan"
         
         
         try:

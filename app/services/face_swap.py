@@ -17,7 +17,7 @@ try:
     import insightface
     from insightface.app import FaceAnalysis
     INSIGHTFACE_AVAILABLE = True
-    logger.info("✅ InsightFace 可用")
+    logger.info("✅ InsightFace 已導入")
 except ImportError:
     INSIGHTFACE_AVAILABLE = False
     logger.warning("⚠️ InsightFace 未安裝，臉部交換功能將不可用")
@@ -39,47 +39,53 @@ class FaceSwapService:
             import os
             from pathlib import Path
             
-            # 🔥 設置模型路徑（使用 HOME 目錄）
-            model_dir = Path.home() / '.insightface' / 'models'
-            model_dir.mkdir(parents=True, exist_ok=True)
+            logger.info("開始初始化 FaceSwapService...")
             
-            logger.info(f"模型目錄: {model_dir}")
-            
-            # 🔥 嘗試多種初始化方式（InsightFace 0.2.1 API）
-            logger.info("嘗試初始化 FaceAnalysis...")
-            
-            # 方法 1: 使用預設配置（InsightFace 0.2.1 不支持 providers 參數）
+            # 🔥 InsightFace 0.2.1 簡化初始化
+            # 不設置 model_dir，讓 InsightFace 使用預設路徑
             try:
-                self.app = FaceAnalysis()
+                logger.info("初始化 FaceAnalysis (buffalo_l)...")
+                self.app = FaceAnalysis(name='buffalo_l', root='~/.insightface')
                 self.app.prepare(ctx_id=-1, det_size=(640, 640))
-                logger.info("✅ FaceAnalysis 初始化成功（CPU 模式）")
-            except Exception as e1:
-                logger.warning(f"預設初始化失敗: {e1}")
-                
-                # 方法 2: 嘗試不同的參數
+                logger.info("✅ FaceAnalysis 初始化成功（buffalo_l, CPU 模式）")
+            except Exception as e:
+                logger.error(f"FaceAnalysis 初始化失敗: {e}", exc_info=True)
+                logger.warning("將嘗試不指定 root 路徑...")
                 try:
                     self.app = FaceAnalysis(name='buffalo_l')
                     self.app.prepare(ctx_id=-1, det_size=(640, 640))
-                    logger.info("✅ FaceAnalysis 初始化成功（buffalo_l 模式）")
+                    logger.info("✅ FaceAnalysis 初始化成功（預設路徑）")
                 except Exception as e2:
-                    logger.error(f"buffalo_l 初始化也失敗: {e2}")
-                    raise Exception("所有 FaceAnalysis 初始化方法都失敗")
+                    logger.error(f"所有初始化方法都失敗: {e2}", exc_info=True)
+                    # 不拋出異常，讓服務繼續運行但標記為不可用
+                    self.app = None
             
-            # 🔥 載入臉部交換模型（簡化版本，不自動下載）
-            logger.info("嘗試載入臉部交換模型...")
-            
-            # 檢查模型是否已存在
-            model_path = model_dir / 'inswapper_128.onnx'
-            
-            if model_path.exists():
-                logger.info(f"找到現有模型: {model_path}")
-                self.swapper = insightface.model_zoo.get_model(str(model_path))
-                logger.info("✅ 臉部交換模型載入成功")
+            # 🔥 載入臉部交換模型
+            if self.app is not None:
+                logger.info("嘗試載入臉部交換模型...")
+                
+                try:
+                    from pathlib import Path
+                    # 檢查模型是否已存在
+                    model_path = Path.home() / '.insightface' / 'models' / 'inswapper_128.onnx'
+                    
+                    if model_path.exists():
+                        logger.info(f"找到現有模型: {model_path}")
+                        self.swapper = insightface.model_zoo.get_model(str(model_path))
+                        logger.info("✅ 臉部交換模型載入成功")
+                    else:
+                        logger.warning(f"模型文件不存在: {model_path}")
+                        logger.warning("臉部交換功能將無法使用（僅臉部檢測可用）")
+                        logger.info("\n📥 下載 inswapper_128.onnx 模型:")
+                        logger.info("   1. 訪問: https://huggingface.co/deepinsight/inswapper/tree/main")
+                        logger.info(f"   2. 下載 inswapper_128.onnx 到: {model_path}")
+                        logger.info("   3. 重啟後端服務\n")
+                        self.swapper = None
+                except Exception as swapper_error:
+                    logger.error(f"載入臉部交換模型時發生錯誤: {swapper_error}", exc_info=True)
+                    self.swapper = None
             else:
-                logger.warning(f"模型文件不存在: {model_path}")
-                logger.warning("臉部交換功能將無法使用")
-                logger.info("提示: 模型會在首次使用時自動下載")
-                # 不設置 swapper，讓 is_available() 返回 False
+                logger.warning("FaceAnalysis 未初始化，跳過臉部交換模型載入")
                 self.swapper = None
             
             if self.app:
