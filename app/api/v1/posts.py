@@ -347,12 +347,45 @@ def like_post(
     db: Session = Depends(get_db),
     current_user=Depends(current_user_from_header),
 ):
+    """對貼文按讚 / 收回愛心（toggle）。
+
+    - 若目前尚未按讚：新增一筆 user_post_like 紀錄，like_count +1。
+    - 若已按讚：刪除該紀錄，like_count -1（不少於 0）。
+    回傳最新的 like_count 與 liked 狀態。
     """
-    對貼文按讚。
-    目前實作：每按一次就讓 like_count +1（沒有做「同一使用者只能按一次」的判斷）。
-    回傳最新的 like_count。
-    """
+
+    def _ensure_like_table(inner_db: Session) -> None:
+        try:
+            inner_db.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS user_post_like (
+                        id SERIAL PRIMARY KEY,
+                        post_id UUID NOT NULL,
+                        user_id TEXT NOT NULL,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        UNIQUE(post_id, user_id)
+                    );
+                    """
+                )
+            )
+            inner_db.execute(
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_user_post_like_post_id
+                    ON user_post_like(post_id);
+                    """
+                )
+            )
+            inner_db.commit()
+        except Exception:
+            inner_db.rollback()
+            logger.exception("ensure_like_table failed")
+            raise HTTPException(status_code=500, detail="初始化按讚表失敗")
+
     try:
+        _ensure_like_table(db)
+
         # 先確認貼文存在
         row = db.execute(
             text("SELECT like_count FROM user_post WHERE id = :id"),
@@ -362,30 +395,75 @@ def like_post(
         if not row:
             raise HTTPException(status_code=404, detail="找不到該貼文")
 
-        # 直接讓 like_count + 1
-        updated = db.execute(
+        user_id = str(getattr(current_user, "id", "") or "")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="找不到使用者資訊")
+
+        # 檢查是否已經按讚
+        existing = db.execute(
             text(
-                """
-                UPDATE user_post
-                SET like_count = COALESCE(like_count, 0) + 1,
-                    updated_at = NOW()
-                WHERE id = :id
-                RETURNING like_count;
-                """
+                "SELECT id FROM user_post_like WHERE post_id = :pid AND user_id = :uid"
             ),
-            {"id": post_id},
+            {"pid": post_id, "uid": user_id},
         ).mappings().first()
+
+        if existing:
+            # 已按讚 → 收回愛心
+            db.execute(
+                text("DELETE FROM user_post_like WHERE id = :id"),
+                {"id": existing["id"]},
+            )
+            updated = db.execute(
+                text(
+                    """
+                    UPDATE user_post
+                    SET like_count = GREATEST(COALESCE(like_count, 0) - 1, 0),
+                        updated_at = NOW()
+                    WHERE id = :id
+                    RETURNING like_count;
+                    """
+                ),
+                {"id": post_id},
+            ).mappings().first()
+            liked = False
+        else:
+            # 尚未按讚 → 新增一筆紀錄
+            db.execute(
+                text(
+                    """
+                    INSERT INTO user_post_like (post_id, user_id)
+                    VALUES (:pid, :uid)
+                    ON CONFLICT (post_id, user_id) DO NOTHING;
+                    """
+                ),
+                {"pid": post_id, "uid": user_id},
+            )
+            updated = db.execute(
+                text(
+                    """
+                    UPDATE user_post
+                    SET like_count = COALESCE(like_count, 0) + 1,
+                        updated_at = NOW()
+                    WHERE id = :id
+                    RETURNING like_count;
+                    """
+                ),
+                {"id": post_id},
+            ).mappings().first()
+            liked = True
 
         db.commit()
 
         return {
             "post_id": str(post_id),
             "like_count": updated["like_count"],
+            "liked": liked,
         }
 
     except HTTPException:
         raise
     except Exception as e:
+        db.rollback()
         logger.exception("like_post failed")
         raise HTTPException(status_code=500, detail=f"按讚失敗: {e}")
 
@@ -426,6 +504,182 @@ def get_post(
     except Exception:
         logger.exception("get_post failed")
         raise HTTPException(status_code=500, detail="讀取貼文失敗")
+
+
+def _ensure_comment_table(db: Session) -> None:
+    """在第一次使用時建立 user_post_comment 表（若不存在）。"""
+    try:
+        # 不使用外鍵，避免不同環境下 user_post / app_users schema 差異導致錯誤
+        db.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS user_post_comment (
+                    id SERIAL PRIMARY KEY,
+                    post_id UUID NOT NULL,
+                    user_display_name TEXT,
+                    user_picture TEXT,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                """
+            )
+        )
+        db.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_post_comment_post_id
+                ON user_post_comment(post_id);
+                """
+            )
+        )
+        # 若是先前建立的舊表，補上缺少的欄位避免 SELECT 失敗
+        db.execute(
+            text(
+                """
+                ALTER TABLE user_post_comment
+                ADD COLUMN IF NOT EXISTS user_display_name TEXT;
+                """
+            )
+        )
+        db.execute(
+            text(
+                """
+                ALTER TABLE user_post_comment
+                ADD COLUMN IF NOT EXISTS user_picture TEXT;
+                """
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("ensure_comment_table failed")
+        raise HTTPException(status_code=500, detail="初始化留言表失敗")
+
+
+@router.get("/{post_id}/comments")
+def list_post_comments(
+    post_id: _uuid.UUID,
+    db: Session = Depends(get_db),
+):
+    """取得指定貼文的留言列表。"""
+    try:
+        _ensure_comment_table(db)
+
+        rows = (
+            db.execute(
+                text(
+                    """
+                    SELECT id, content, created_at,
+                           user_display_name, user_picture
+                    FROM user_post_comment
+                    WHERE post_id = :pid
+                    ORDER BY created_at DESC
+                    """
+                ),
+                {"pid": post_id},
+            )
+            .mappings()
+            .all()
+        )
+
+        comments: List[Dict[str, Any]] = []
+        for r in rows:
+            comments.append(
+                {
+                    "id": r["id"],
+                    "content": r["content"],
+                    "created_at": r["created_at"],
+                    "user": {
+                        "display_name": r.get("user_display_name"),
+                        "picture": r.get("user_picture"),
+                    },
+                }
+            )
+        return comments
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("list_post_comments failed")
+        raise HTTPException(status_code=500, detail=f"讀取留言失敗: {e}")
+
+
+@router.post("/{post_id}/comments")
+def create_post_comment(
+    post_id: _uuid.UUID,
+    payload: Dict[str, Any],
+    db: Session = Depends(get_db),
+    current_user=Depends(current_user_from_header),
+):
+    """新增一則留言並回傳留言內容。"""
+    content = (payload.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="留言內容不得為空")
+
+    try:
+        _ensure_comment_table(db)
+
+        # 確認貼文存在
+        exists = db.execute(
+            text("SELECT 1 FROM user_post WHERE id = :id"), {"id": post_id}
+        ).scalar()
+        if not exists:
+            raise HTTPException(status_code=404, detail="找不到該貼文")
+
+        row = (
+            db.execute(
+                text(
+                    """
+                    INSERT INTO user_post_comment (post_id, user_display_name, user_picture, content, created_at)
+                    VALUES (:pid, :uname, :upic, :content, NOW())
+                    RETURNING id, post_id, user_display_name, user_picture, content, created_at;
+                    """
+                ),
+                {
+                    "pid": post_id,
+                    "uname": getattr(current_user, "display_name", None)
+                    or getattr(current_user, "email", None),
+                    "upic": getattr(current_user, "picture", None),
+                    "content": content,
+                },
+            )
+            .mappings()
+            .first()
+        )
+
+        # 更新貼文的留言數
+        db.execute(
+            text(
+                """
+                UPDATE user_post
+                SET comment_count = COALESCE(comment_count, 0) + 1,
+                    updated_at = NOW()
+                WHERE id = :id
+                """
+            ),
+            {"id": post_id},
+        )
+
+        db.commit()
+
+        result = {
+            "id": row["id"],
+            "content": row["content"],
+            "created_at": row["created_at"],
+            "user": {
+                "display_name": row.get("user_display_name")
+                or getattr(current_user, "display_name", None)
+                or getattr(current_user, "email", None),
+                "picture": row.get("user_picture")
+                or getattr(current_user, "picture", None),
+            },
+        }
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception("create_post_comment failed")
+        raise HTTPException(status_code=500, detail=f"留言失敗: {e}")
 
 
 @router.delete("/{post_id}", status_code=status.HTTP_204_NO_CONTENT)

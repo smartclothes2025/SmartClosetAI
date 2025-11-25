@@ -366,153 +366,104 @@ class FashionAdvisor:
                  ))
         return final_items
 
-    async def process_fitting_request(self, user_id: str, user_input: str, selected_items: List[dict], picture_uri: Optional[str] = None, user_gender: Optional[str] = None) -> Dict[str, Any]:
-        """
-        專門用於虛擬試衣頁面，根據精確選擇的衣物生成圖片。
-        """
-        logger.info(f"處理虛擬試衣生成請求：User ID: {user_id}, Items: {len(selected_items)}")
-
-        # 1. 獲取選中衣物的完整資訊 (含 GCS URL)
-        wardrobe_items = self._get_selected_clothing_items(user_id, selected_items)
-        if not wardrobe_items:
-            return {"type": "text", "text": "請先在衣櫃中選擇至少一件衣物。"}
-        # 轉換 ClothingItem 列表為 Dict 列表
-        clothing_dicts = [
-            {"name": item.name, "category": item.category, "img": item.cover_image_url}
-            for item in wardrobe_items if item.cover_image_url
-        ]
-
-        if not clothing_dicts:
-             return {"type": "text", "text": "所選衣物均無有效的圖片URL，無法進行虛擬試穿。"}
-
-
-        #  2. 下載用戶頭貼（如果有）- 使用與虛擬試衣完全相同的邏輯
-        user_photo_base64 = None
-        if picture_uri and picture_uri.strip():
-            logger.info(f"📸 虛擬試衣頁面：準備下載用戶頭貼")
-            logger.info(f"     原始 URI: '{picture_uri}'")
-            
-            try:
-                #  使用與虛擬試衣完全相同的調用方式
-                if picture_uri.startswith("gs://"):
-                    logger.info("     檢測到完整 GCS URI")
-                    user_photo_base64 = await img_gen_service.download_user_photo_from_gcs(
-                        picture_uri,  # 位置參數 1
-                        str(user_id)       # 位置參數 2
-                    )
-                else:
-                    logger.info("     檢測到相對路徑")
-                    user_photo_base64 = await img_gen_service.download_user_photo_from_gcs(
-                        picture_uri,
-                        str(user_id)
-                    )
-                
-            except Exception as e:
-                logger.error(f"❌ 虛擬試衣頁面：用戶頭貼下載失敗")
-                logger.error(f"     URI: '{picture_uri}'")
-                logger.error(f"     錯誤: {str(e)}", exc_info=True)
-        else:
-            logger.warning("⚠️ 虛擬試衣頁面：未提供用戶頭貼 URI，將使用預設模特兒")
-            logger.warning(f"     picture_uri: '{picture_uri}'")
-
-        #  3. 使用 ImageGenerationService 生成圖片
-        logger.info(f"🛠️ 虛擬試衣頁面：準備呼叫 img_gen_service.generate_tryon_image()")
-
-        generation_result = await img_gen_service.generate_tryon_image(
-            prompt=user_input, 
-            clothing_items=clothing_dicts,
-            user_photo_base64=user_photo_base64  # 🔥 傳入用戶頭貼
-        )
-
-
-        # 4. 處理結果
-        if generation_result.get("success"):
-            image_base64 = generation_result.get("image_base64")
-            if image_base64:
-                image_bytes = base64.b64decode(image_base64)
-                generated_image_url = self._upload_image_to_gcs(image_bytes, folder="virtual_fitting_page")
-            else:
-                generated_image_url = None
-
-            if generated_image_url:
-                return {
-                    "type": "image",
-                    "url": generated_image_url,
-                    "text": f"好的，這是根據您選中的 {len(clothing_dicts)} 件衣物生成的虛擬試穿結果："
-                }
-
-            else:
-                logger.error("虛擬試穿成功但 GCS 上傳失敗，轉為純文字。")
-                return self.chat_with_gemini(user_input, wardrobe_items)
-
-        else:
-            # 如果圖片生成失敗，退回純文字建議
-            logger.error(f"虛擬試穿生成失敗: {generation_result.get('error', '未知錯誤')}")
-            chat_response = self.chat_with_gemini(user_input, wardrobe_items)
-
-            # 在文字回應前加上錯誤提示
-            error_text = f"⚠️ 虛擬試穿圖片生成失敗（{generation_result.get('error', '未知錯誤')}）。我將提供文字建議代替。\n\n"
-            chat_response["text"] = error_text + chat_response.get("text", "")
-
-            return chat_response
-
-
-    #  保留的自動城市偵測方法，使用 httpx (假設您已安裝此庫)
-    async def _get_city_from_ip(self) -> str:
-        """
-        實作自動偵測城市名稱的邏輯，呼叫一個 IP 地理位置 API。
-        """
-        try:
-            # 使用一個公共的 IP-to-Geo 服務來獲取當前伺服器（或代理）的地理位置
-            async with httpx.AsyncClient(timeout=5) as client:
-                response = await client.get("https://ipinfo.io/json")
-                response.raise_for_status() # 如果響應狀態碼不是 200，則拋出異常
-                data = response.json()
-                city = data.get("city", "Taoyuan") # 獲取城市名稱，如果失敗則預設 'Taoyuan'
-
-                logger.info(f"✅ IP-to-Geo 服務自動偵測到城市: {city}")
-                return city
-        except Exception as e:
-            logger.error(f"❌ IP-to-Geo 服務偵測失敗: {e}", exc_info=True)
-            # 由於您位於台灣，預設為台北會比桃園合理
-            return "Taoyuan"# 失敗時的預設城市
-
-    
-
-    async def process_user_input(self, user_id: str, user_input: str, user_image_data: Optional[str] = None, picture_uri: Optional[str] = None, user_gender: Optional[str] = None, city: str = None, country_code: str = "TW") -> Dict[str, Any]:
-        """
-        處理使用者輸入，如果偵測到穿搭請求，則嘗試生成圖片；否則進行一般聊天。
-        現在會自動偵測城市以獲取天氣資訊。
-        """
-        logger.info(f"開始處理User '{user_id}'的輸入: '{user_input}'，使用者是否有上傳圖片: {bool(user_image_data)}")
+    def _smart_select_clothing_items(self, clothing_items: List[Dict[str, Any]], max_items: int = 2) -> List[Dict[str, Any]]:
+        """智能隨機挑選 2 件衣物，確保生成圖片時臉部相似度更高"""
+        import random
         
-        # 獲取天氣資訊
+        if len(clothing_items) <= max_items:
+            return clothing_items
+        
+        items_by_category = {"tops": [], "bottoms": [], "dresses": [], "outerwear": [], "shoes": [], "accessories": [], "bags": []}
+        
+        for item in clothing_items:
+            category = item.get("category", "").lower()
+            if category in ["tops"]:
+                items_by_category["tops"].append(item)
+            elif category in ["bottoms", "pants", "skirts"]:
+                items_by_category["bottoms"].append(item)
+            elif category in ["dresses"]:
+                items_by_category["dresses"].append(item)
+            elif category in ["outerwear"]:
+                items_by_category["outerwear"].append(item)
+            elif category in ["shoes"]:
+                items_by_category["shoes"].append(item)
+            elif category in ["accessories"]:
+                items_by_category["accessories"].append(item)
+            elif category in ["bags"]:
+                items_by_category["bags"].append(item)
+        
+        selected = []
+        if items_by_category["tops"]:
+            selected.append(random.choice(items_by_category["tops"]))
+            if items_by_category["bottoms"] and len(selected) < max_items:
+                selected.append(random.choice(items_by_category["bottoms"]))
+        elif items_by_category["dresses"]:
+            selected.append(random.choice(items_by_category["dresses"]))
+        elif items_by_category["bottoms"]:
+            selected.append(random.choice(items_by_category["bottoms"]))
+        
+        remaining_categories = ["outerwear", "shoes", "accessories", "bags", "tops", "bottoms", "dresses"]
+        random.shuffle(remaining_categories)
+        
+        for cat in remaining_categories:
+            if len(selected) >= max_items:
+                break
+            available_items = [item for item in items_by_category[cat] if item not in selected]
+            if available_items:
+                selected.append(random.choice(available_items))
+        
+        if len(selected) < 2:
+            remaining = [item for item in clothing_items if item not in selected]
+            random.shuffle(remaining)
+            selected.extend(remaining[:max(0, 2 - len(selected))])
+        
+        random.shuffle(selected)
+        logger.info(f"🎯 智能隨機挑選結果：")
+        for idx, item in enumerate(selected, 1):
+            logger.info(f"   {idx}. {item.get('name')} ({item.get('category')})")
+        return selected[:max_items]
+
+    async def process_user_input(
+        self, 
+        user_id: str, 
+        user_input: str, 
+        user_image_data: Optional[str] = None,
+        picture_uri: Optional[str] = None,
+        user_gender: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        處理小助手的用戶輸入（聊天頁面）
+        
+        Args:
+            user_id: 用戶 ID
+            user_input: 用戶輸入的文字
+            user_image_data: 前端上傳的照片 (base64)
+            picture_uri: 用戶頭貼 URI
+            user_gender: 用戶性別
+        """
+        logger.info(f"🤖 小助手處理請求：User ID: {user_id}")
+        logger.info(f"   輸入: {user_input}")
+        
+        # 1. 獲取天氣資訊
         weather_info = None
         weather_advice = ""
-        
-        detected_city = await self._get_city_from_ip() 
-        logger.info(f"🌍 自動偵測城市為: {detected_city}")
-
-        if weather_service:
-            try:
-                weather_info = await weather_service.get_weather_by_city(detected_city, country_code) 
-                
+        try:
+            if weather_service:
+                weather_info = await weather_service.get_weather_info(city="Taoyuan")
                 if weather_info:
-                    weather_advice = weather_service.get_weather_based_clothing_advice(weather_info)
-                    logger.info(f"🌤️ 天氣資訊已獲取：{weather_info['city']} {weather_info['temperature']}°C {weather_info['weather_description']}")
-            except Exception as e:
-                logger.warning(f"獲取天氣資訊失敗: {str(e)}")
-
-
-        if not self.genai:
-            logger.critical("Gemini API 未初始化。")
-            return {"type": "text", "text": "嚴重錯誤：圖片生成服務未啟動。"}
-
-        wardrobe_items = self.get_wardrobe_items(user_id)
+                    temp = weather_info.get("temperature", 20)
+                    weather_advice = weather_info.get("suggestion", "")
+                    logger.info(f"🌤️ 天氣資訊：{weather_info['city']} {temp}°C - {weather_info.get('weather_description', '')}")
+        except Exception as e:
+            logger.warning(f"獲取天氣資訊失敗: {e}")
         
-
+        # 2. 獲取用戶衣櫃
+        wardrobe_items = self.get_wardrobe_items(user_id)
+        logger.info(f"👔 獲取到 {len(wardrobe_items)} 件衣物")
+        
+        # 3. 處理照片優先級
         user_photo_base64 = None
-        photo_source = None
+        photo_source = "預設模特兒"
         
         # 優先級 1: 前端上傳的照片（最高優先級）
         if user_image_data:
@@ -635,6 +586,16 @@ class FashionAdvisor:
                     for item in wardrobe_items if item.cover_image_url
                 ]
                 logger.info(f"🧾 從衣櫃整理出 {len(clothing_dicts)} 件含圖片的衣物資料。")
+                
+                # 🎯 智能隨機挑選固定 2 件衣物（避免圖片過多影響臉部相似度，且每次都不同）
+                if len(clothing_dicts) > 2:
+                    logger.info(f"⚠️ 衣物數量 ({len(clothing_dicts)}) 超過 2 件，開始智能隨機挑選")
+                    clothing_dicts = self._smart_select_clothing_items(clothing_dicts, max_items=2)
+                    logger.info(f"✅ 已智能挑選 {len(clothing_dicts)} 件衣物用於生成穿搭圖")
+                elif len(clothing_dicts) < 2:
+                    logger.info(f"ℹ️ 衣物數量 ({len(clothing_dicts)}) 少於 2 件，將使用所有衣物")
+                else:
+                    logger.info(f"✅ 衣物數量剛好 2 件，將使用所有衣物")
 
                 if not clothing_dicts:
                     logger.warning("衣櫃圖片 URL 皆為空，無法進行圖片生成，轉為文字建議。")
@@ -678,11 +639,11 @@ class FashionAdvisor:
                 else:
                     logger.error(f"虛擬試穿失敗: {generation_result.get('error', '未知錯誤')}，轉為文字回覆。")
                     return self._generate_outfit_fallback_text(user_input, wardrobe_items, weather_info, weather_advice)
-
-            # 3️⃣ 其他問題：調用 Gemini 生成智能文字回覆
-            logger.info("💬 非穿搭/天氣請求，調用 Gemini 生成智能回覆。")
+            
+            # 3️⃣ 其他問題：一般聊天
+            logger.info("💬 非穿搭/天氣請求，調用 Gemini 生成智能回覆")
             return self.chat_with_gemini(user_input, wardrobe_items, weather_info, weather_advice)
-
+        
         except Exception as e:
-            logger.error(f"FashionAdvisor 處理錯誤: {str(e)}", exc_info=True)
-            return {"type": "text", "text": f"服務器內部錯誤：{str(e)}"}
+            logger.error(f"處理用戶輸入時發生錯誤: {str(e)}", exc_info=True)
+            return {"type": "text", "text": f"抱歉，處理您的請求時發生錯誤：{str(e)}"}

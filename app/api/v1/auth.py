@@ -183,7 +183,7 @@ def login_user(
                     email=email_from_token,
                     display_name=display_name,
                     password_hash=None,
-                    firebase_uid=decoded_token.get("uid"),
+                    # firebase_uid=decoded_token.get("uid"),
                     role="user"
                 )
                 db.add(user)

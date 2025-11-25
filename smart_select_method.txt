@@ -1,0 +1,91 @@
+
+    def _smart_select_clothing_items(self, clothing_items: List[Dict[str, Any]], max_items: int = 5) -> List[Dict[str, Any]]:
+        """
+        智能隨機挑選衣物，確保生成圖片時臉部相似度更高
+        
+        挑選策略：
+        1. 在每個類別內隨機選擇，確保每次結果都不同
+        2. 優先確保基本搭配（上衣+下身）
+        3. 確保至少有 2 件，最多 max_items 件
+        4. 其他衣物隨機補充
+        """
+        import random
+        
+        if len(clothing_items) <= max_items:
+            return clothing_items
+        
+        # 按類別分組衣物
+        items_by_category = {
+            "tops": [],
+            "bottoms": [],
+            "dresses": [],
+            "outerwear": [],
+            "shoes": [],
+            "accessories": [],
+            "bags": [],
+        }
+        
+        for item in clothing_items:
+            category = item.get("category", "").lower()
+            if category in ["tops"]:
+                items_by_category["tops"].append(item)
+            elif category in ["bottoms", "pants", "skirts"]:
+                items_by_category["bottoms"].append(item)
+            elif category in ["dresses"]:
+                items_by_category["dresses"].append(item)
+            elif category in ["outerwear"]:
+                items_by_category["outerwear"].append(item)
+            elif category in ["shoes"]:
+                items_by_category["shoes"].append(item)
+            elif category in ["accessories"]:
+                items_by_category["accessories"].append(item)
+            elif category in ["bags"]:
+                items_by_category["bags"].append(item)
+        
+        selected = []
+        
+        # 第一步：確保基本搭配（隨機選擇）
+        # 優先選一件上衣或洋裝
+        if items_by_category["tops"]:
+            selected.append(random.choice(items_by_category["tops"]))
+            # 再隨機選一件下身
+            if items_by_category["bottoms"] and len(selected) < max_items:
+                selected.append(random.choice(items_by_category["bottoms"]))
+        elif items_by_category["dresses"]:
+            # 如果沒有上衣，用洋裝代替
+            selected.append(random.choice(items_by_category["dresses"]))
+        elif items_by_category["bottoms"]:
+            # 如果連洋裝都沒有，至少選一件下身
+            selected.append(random.choice(items_by_category["bottoms"]))
+        
+        # 第二步：從剩餘類別中隨機補充至 max_items
+        remaining_categories = ["outerwear", "shoes", "accessories", "bags", "tops", "bottoms", "dresses"]
+        random.shuffle(remaining_categories)  # 隨機打亂類別順序
+        
+        for cat in remaining_categories:
+            if len(selected) >= max_items:
+                break
+            
+            available_items = [
+                item for item in items_by_category[cat]
+                if item not in selected  # 避免重複
+            ]
+            
+            if available_items:
+                # 從該類別中隨機選擇一件
+                selected.append(random.choice(available_items))
+        
+        # 第三步：如果還不夠 2 件，從所有剩餘衣物中隨機補充
+        if len(selected) < 2:
+            remaining = [item for item in clothing_items if item not in selected]
+            random.shuffle(remaining)
+            selected.extend(remaining[:max(0, 2 - len(selected))])
+        
+        # 隨機打亂最終順序（可選，讓每次順序也不同）
+        random.shuffle(selected)
+        
+        logger.info(f"🎯 智能隨機挑選結果：")
+        for idx, item in enumerate(selected, 1):
+            logger.info(f"   {idx}. {item.get('name')} ({item.get('category')})")
+        
+        return selected[:max_items]  # 確保不超過最大數量

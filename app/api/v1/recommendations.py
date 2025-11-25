@@ -1175,8 +1175,18 @@ def _build_seed_store_outfit_for_family(
         # 洋裝：避免再搭上衣，專注外套 / 包包 / 其他配件
         non_top_candidates = [it for it in unique_candidates if it.get("category") != "上衣"]
         if non_top_candidates:
-            random.shuffle(non_top_candidates)
-            selected = non_top_candidates[:2]
+            bag_candidates = [it for it in non_top_candidates if it.get("category") == "包包"]
+            other_candidates = [it for it in non_top_candidates if it.get("category") != "包包"]
+            random.shuffle(bag_candidates)
+            random.shuffle(other_candidates)
+            selected = []
+            if other_candidates:
+                selected.append(other_candidates[0])
+            if len(selected) < 2:
+                if bag_candidates:
+                    selected.append(bag_candidates[0])
+                elif len(other_candidates) > 1:
+                    selected.append(other_candidates[1])
         else:
             # 若全部都是上衣，就不強行推薦店家商品（只保留 seed 洋裝）
             selected = []
@@ -1196,6 +1206,17 @@ def _build_seed_store_outfit_for_family(
             "imageUrl": s.get("imageUrl"),
             "purchaseUrl": s.get("purchaseUrl"),
         })
+
+    # 全域規則 1：同一套商店搭配最多只出現一件「上衣」
+    filtered_items: List[Dict[str, Any]] = []
+    seen_top = False
+    for it in items:
+        if it.get("category") == "上衣":
+            if seen_top:
+                continue
+            seen_top = True
+        filtered_items.append(it)
+    items = filtered_items
 
     if len(items) < 2:
         return None
@@ -1692,6 +1713,45 @@ async def _build_today_seed_plan(
         # 最多保留 3 件（主件 + 1~2 搭配）
         if len(items) > 3:
             items = items[:3]
+
+        def _canonical_category(cat):
+            if not cat:
+                return ""
+            try:
+                return map_category(cat)
+            except Exception:
+                return ""
+
+        if raw_cat in ["上衣", "褲子", "裙子"]:
+            top_index = None
+            bottom_index = None
+            for i, it in enumerate(items):
+                cat_norm = _canonical_category(it.get("category"))
+                if top_index is None and cat_norm == "top":
+                    top_index = i
+                if bottom_index is None and cat_norm == "bottom":
+                    bottom_index = i
+
+            if raw_cat == "上衣" and bottom_index is not None:
+                top_item = items[0]
+                bottom_item = items[bottom_index]
+                items = [top_item, bottom_item]
+            elif raw_cat in ["褲子", "裙子"] and top_index is not None:
+                bottom_item = items[0]
+                top_item = items[top_index]
+                items = [top_item, bottom_item]
+
+        # 全域規則 2：任何情況下，同一套 seed-based 穿搭最多只出現一件「top」
+        seen_top = False
+        filtered_items: List[Dict[str, Any]] = []
+        for it in items:
+            cat_norm = _canonical_category(it.get("category"))
+            if cat_norm == "top":
+                if seen_top:
+                    continue
+                seen_top = True
+            filtered_items.append(it)
+        items = filtered_items
 
         outfits.append({
             "id": f"seed_outfit_{idx+1}",
