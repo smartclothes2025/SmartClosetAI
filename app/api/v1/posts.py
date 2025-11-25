@@ -341,6 +341,261 @@ def list_posts(
         logger.exception("list_posts failed")
         raise HTTPException(status_code=500, detail="讀取貼文失敗")
 
+
+def _ensure_favorite_table(db: Session) -> None:
+    """在第一次使用時建立 user_post_favorite 表（若不存在）。"""
+    try:
+        db.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS user_post_favorite (
+                    id SERIAL PRIMARY KEY,
+                    post_id UUID NOT NULL,
+                    user_id TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    UNIQUE(post_id, user_id)
+                );
+                """
+            )
+        )
+        db.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_post_favorite_user_id
+                ON user_post_favorite(user_id);
+                """
+            )
+        )
+        db.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_post_favorite_post_id
+                ON user_post_favorite(post_id);
+                """
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("ensure_favorite_table failed")
+        raise HTTPException(status_code=500, detail="初始化收藏表失敗")
+
+
+@router.post("/{post_id}/favorite")
+def toggle_favorite_post(
+    post_id: _uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(current_user_from_header),
+):
+    """收藏 / 取消收藏貼文（toggle）。"""
+    try:
+        _ensure_favorite_table(db)
+
+        # 確認貼文存在
+        exists = db.execute(
+            text("SELECT 1 FROM user_post WHERE id = :id"), {"id": post_id}
+        ).scalar()
+        if not exists:
+            raise HTTPException(status_code=404, detail="找不到該貼文")
+
+        user_id = str(getattr(current_user, "id", "") or "")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="找不到使用者資訊")
+
+        existing = db.execute(
+            text(
+                "SELECT id FROM user_post_favorite WHERE post_id = :pid AND user_id = :uid"
+            ),
+            {"pid": post_id, "uid": user_id},
+        ).mappings().first()
+
+        if existing:
+            db.execute(
+                text("DELETE FROM user_post_favorite WHERE id = :id"),
+                {"id": existing["id"]},
+            )
+            favorited = False
+        else:
+            db.execute(
+                text(
+                    """
+                    INSERT INTO user_post_favorite (post_id, user_id)
+                    VALUES (:pid, :uid)
+                    ON CONFLICT (post_id, user_id) DO NOTHING;
+                    """
+                ),
+                {"pid": post_id, "uid": user_id},
+            )
+            favorited = True
+
+        db.commit()
+        return {"post_id": str(post_id), "favorited": favorited}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception("toggle_favorite_post failed")
+        raise HTTPException(status_code=500, detail=f"收藏操作失敗: {e}")
+
+
+@router.get("/favorites/me")
+def list_my_favorite_posts(
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user=Depends(current_user_from_header),
+):
+    """列出目前登入使用者收藏的貼文列表。"""
+    try:
+        _ensure_favorite_table(db)
+
+        user_id = str(getattr(current_user, "id", "") or "")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="找不到使用者資訊")
+
+        sql = text(
+            """
+            SELECT
+                p.*,
+                u.display_name,
+                u.email,
+                u.avatar_url
+            FROM user_post_favorite f
+            JOIN user_post p ON f.post_id = p.id
+            LEFT JOIN app_users u ON p.user_id = u.id
+            WHERE f.user_id = :uid
+            ORDER BY f.created_at DESC
+            LIMIT :limit
+            """
+        )
+        rows = db.execute(sql, {"uid": user_id, "limit": limit}).mappings().all()
+
+        res: List[Dict[str, Any]] = []
+        for r in rows:
+            item = dict(r)
+            try:
+                media_parsed = json.loads(item.get("media") or "[]")
+                for m in media_parsed:
+                    if isinstance(m, dict) and str(m.get("gcs_uri", "")).startswith("gs://"):
+                        m["url"] = _https_from_gcs(m["gcs_uri"])
+                item["media"] = media_parsed
+            except Exception:
+                pass
+            res.append(item)
+        return res
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("list_my_favorite_posts failed")
+        raise HTTPException(status_code=500, detail=f"讀取收藏貼文失敗: {e}")
+
+
+@router.get("/user/{user_id}")
+def list_user_public_posts(
+    user_id: str,
+    limit: int = 30,
+    db: Session = Depends(get_db),
+):
+    """列出某位使用者的公開貼文（不需登入）。"""
+    try:
+        sql = text(
+            """
+            SELECT
+                p.*,
+                u.display_name,
+                u.email,
+                u.interformation,
+                u.avatar_url
+            FROM user_post p
+            LEFT JOIN app_users u ON p.user_id = u.id
+            WHERE p.user_id = :uid AND p.visibility = 'public'
+            ORDER BY p.created_at DESC
+            LIMIT :limit
+            """
+        )
+        rows = db.execute(sql, {"uid": user_id, "limit": limit}).mappings().all()
+
+        res: List[Dict[str, Any]] = []
+        for r in rows:
+            item = dict(r)
+            try:
+                media_parsed = json.loads(item.get("media") or "[]")
+                for m in media_parsed:
+                    if isinstance(m, dict) and str(m.get("gcs_uri", "")).startswith("gs://"):
+                        m["url"] = _https_from_gcs(m["gcs_uri"])
+                item["media"] = media_parsed
+            except Exception:
+                pass
+            res.append(item)
+        return res
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("list_user_public_posts failed")
+        raise HTTPException(status_code=500, detail="讀取使用者貼文失敗")
+
+
+@router.put("/{post_id}")
+def update_post(
+    post_id: _uuid.UUID,
+    payload: Dict[str, Any],
+    db: Session = Depends(get_db),
+    current_user=Depends(current_user_from_header),
+):
+    """編輯貼文：僅允許擁有者或 admin 更新標題 / 內容 / 標籤 / 可見範圍。"""
+    try:
+        row = db.execute(
+            text("SELECT * FROM user_post WHERE id = :id"),
+            {"id": post_id},
+        ).mappings().first()
+        if not row:
+            raise HTTPException(status_code=404, detail="找不到該貼文")
+
+        role = str(getattr(current_user, "role", "") or "").lower()
+        is_admin = role == "admin"
+        if (row["user_id"] != getattr(current_user, "id", None)) and (not is_admin):
+            raise HTTPException(status_code=403, detail="無權編輯此貼文")
+
+        title = (payload.get("title") or row.get("title") or "").strip()
+        content = payload.get("content", row.get("content"))
+        tag = payload.get("tag", row.get("tag"))
+
+        visibility = (payload.get("visibility") or row.get("visibility") or "public").strip().lower()
+        if visibility not in ALLOWED_VISIBILITY:
+            visibility = row.get("visibility") or "public"
+
+        updated = db.execute(
+            text(
+                """
+                UPDATE user_post
+                SET title = :title,
+                    content = :content,
+                    tag = :tag,
+                    visibility = :visibility,
+                    updated_at = NOW()
+                WHERE id = :id
+                RETURNING id, user_id, title, content, tag, visibility,
+                          like_count, comment_count, created_at, updated_at;
+                """
+            ),
+            {
+                "id": post_id,
+                "title": title,
+                "content": content,
+                "tag": tag,
+                "visibility": visibility,
+            },
+        ).mappings().first()
+
+        db.commit()
+        return dict(updated or {})
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception("update_post failed")
+        raise HTTPException(status_code=500, detail=f"更新貼文失敗: {e}")
+
+
 @router.post("/{post_id}/like")
 def like_post(
     post_id: _uuid.UUID,
@@ -490,6 +745,27 @@ def get_post(
         if not row:
             raise HTTPException(status_code=404, detail="找不到該貼文")
         item = dict(row)
+
+        # 判斷目前使用者是否已按讚（liked_by_me）
+        liked_by_me = False
+        if credentials and credentials.credentials:
+            try:
+                current_user = current_user_from_header(credentials, db)
+                user_id = str(getattr(current_user, "id", "") or "")
+                if user_id:
+                    like_exists = db.execute(
+                        text(
+                            "SELECT 1 FROM user_post_like WHERE post_id = :pid AND user_id = :uid"
+                        ),
+                        {"pid": post_id, "uid": user_id},
+                    ).scalar()
+                    liked_by_me = bool(like_exists)
+            except HTTPException:
+                liked_by_me = False
+            except Exception:
+                logger.exception("get_post liked_by_me check failed")
+        item["liked_by_me"] = liked_by_me
+
         try:
             media_parsed = json.loads(item.get("media") or "[]")
             for m in media_parsed:

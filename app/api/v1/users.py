@@ -97,6 +97,44 @@ def _sanitize_mapping_values(obj: dict) -> dict:
     return out
 
 
+def _ensure_follow_table(db: Session) -> None:
+    """在第一次使用時建立 user_follow 表（若不存在）。"""
+    try:
+        db.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS user_follow (
+                    id SERIAL PRIMARY KEY,
+                    follower_id TEXT NOT NULL,
+                    followee_id TEXT NOT NULL,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    UNIQUE(follower_id, followee_id)
+                );
+                """
+            )
+        )
+        db.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_follow_follower
+                ON user_follow(follower_id);
+                """
+            )
+        )
+        db.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_follow_followee
+                ON user_follow(followee_id);
+                """
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="初始化追蹤表失敗")
+
+
 def _get_user_from_auth_header(authorization: Optional[str], db: Session):
     """解析 Authorization header，接受簡單 token 格式: Bearer user-<id>-token"""
     if not authorization:
@@ -291,3 +329,117 @@ def get_profile_picture(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"取得頭貼失敗: {str(e)}")
+
+
+@router.post("/users/{target_user_id}/follow")
+def toggle_follow_user(
+    target_user_id: str,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """追蹤 / 取消追蹤指定使用者（toggle）。"""
+    user = _get_user_from_auth_header(authorization, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="需要授權")
+
+    current_id = str(user["id"])
+    target_id = str(target_user_id)
+
+    if current_id == target_id:
+        raise HTTPException(status_code=400, detail="不能追蹤自己")
+
+    _ensure_follow_table(db)
+
+    # 確認目標使用者存在
+    exists = db.execute(
+        text("SELECT 1 FROM app_users WHERE id = :id"), {"id": target_user_id}
+    ).scalar()
+    if not exists:
+        raise HTTPException(status_code=404, detail="目標使用者不存在")
+
+    try:
+        existing = db.execute(
+            text(
+                "SELECT id FROM user_follow WHERE follower_id = :fid AND followee_id = :tid"
+            ),
+            {"fid": current_id, "tid": target_id},
+        ).mappings().first()
+
+        if existing:
+            db.execute(
+                text("DELETE FROM user_follow WHERE id = :id"),
+                {"id": existing["id"]},
+            )
+            following = False
+        else:
+            db.execute(
+                text(
+                    """
+                    INSERT INTO user_follow (follower_id, followee_id)
+                    VALUES (:fid, :tid)
+                    ON CONFLICT (follower_id, followee_id) DO NOTHING;
+                    """
+                ),
+                {"fid": current_id, "tid": target_id},
+            )
+            following = True
+
+        db.commit()
+        return {"target_user_id": target_id, "following": following}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"追蹤操作失敗: {e}")
+
+
+@router.get("/me/following")
+def list_my_following(
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """列出我追蹤中的使用者清單。"""
+    user = _get_user_from_auth_header(authorization, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="需要授權")
+
+    _ensure_follow_table(db)
+
+    uid = str(user["id"])
+    sql = text(
+        """
+        SELECT u.*
+        FROM user_follow f
+        JOIN app_users u ON u.id::text = f.followee_id
+        WHERE f.follower_id = :uid
+        ORDER BY f.created_at DESC
+        """
+    )
+    rows = db.execute(sql, {"uid": uid}).mappings().all()
+    return [_sanitize_mapping_values(dict(r)) for r in rows]
+
+
+@router.get("/me/followers")
+def list_my_followers(
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """列出追蹤我的使用者清單（粉絲）。"""
+    user = _get_user_from_auth_header(authorization, db)
+    if not user:
+        raise HTTPException(status_code=401, detail="需要授權")
+
+    _ensure_follow_table(db)
+
+    uid = str(user["id"])
+    sql = text(
+        """
+        SELECT u.*
+        FROM user_follow f
+        JOIN app_users u ON u.id::text = f.follower_id
+        WHERE f.followee_id = :uid
+        ORDER BY f.created_at DESC
+        """
+    )
+    rows = db.execute(sql, {"uid": uid}).mappings().all()
+    return [_sanitize_mapping_values(dict(r)) for r in rows]
