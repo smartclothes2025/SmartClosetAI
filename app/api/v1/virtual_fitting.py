@@ -13,7 +13,7 @@ from PIL import Image
 import json
 import logging
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Import our image generation service
 from app.services.image_generation import image_service
@@ -325,11 +325,45 @@ async def save_outfit_from_virtual_fitting(
     - 同時可以綁定 item_ids，並寫入標題 / 描述 / 標籤
     """
     try:
-        # 1) 解析日期
-        try:
-            worn_date_obj = datetime.strptime(payload.worn_date, "%Y-%m-%d")
-        except Exception:
-            raise HTTPException(status_code=400, detail="worn_date 需為 YYYY-MM-DD 格式")
+        # 1) 解析日期與時間（支援多種格式），若只提供日期則時間為 00:00；轉為 timezone-aware (UTC)
+        def _parse_worn_date(s: str) -> datetime:
+            if not s or not isinstance(s, str):
+                raise HTTPException(status_code=400, detail="worn_date 必須為字串，格式如 'YYYY-MM-DD' 或 'YYYY-MM-DD HH:MM' 或 ISO')")
+            v = s.strip()
+            # 優先嘗試 ISO 格式
+            try:
+                dt = datetime.fromisoformat(v)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except Exception:
+                pass
+
+            fmts = ["%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]
+            for f in fmts:
+                try:
+                    dt = datetime.strptime(v, f)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt
+                except Exception:
+                    continue
+
+            raise HTTPException(status_code=400, detail="worn_date 解析失敗，請使用 'YYYY-MM-DD' 或 'YYYY-MM-DD HH:MM' 或 ISO 格式")
+
+        parsed_dt = _parse_worn_date(payload.worn_date)
+        # 使用前端提供的日期，時間部分使用當前伺服器時間（UTC）
+        now_utc = datetime.now(timezone.utc)
+        worn_date_obj = datetime(
+            parsed_dt.year,
+            parsed_dt.month,
+            parsed_dt.day,
+            now_utc.hour,
+            now_utc.minute,
+            now_utc.second,
+            tzinfo=timezone.utc,
+        )
+        logger.info(f"Parsed save-outfit worn_date: input='{payload.worn_date}' -> parsed_date={parsed_dt.date()!r}, time_from_now={now_utc.time()!r}, combined={worn_date_obj!r}")
 
         # 2) 取得圖片來源（支援 image_data 或 image_url，優先使用 image_data）
         img_b64 = payload.image_data or payload.image_url

@@ -27,7 +27,11 @@ router = APIRouter()
 
 class OutfitCreateStage1(BaseModel):
     """第一階段：保存圖片"""
-    worn_date: str  # YYYY-MM-DD 格式
+    # 支援多種格式，例如：
+    # - YYYY-MM-DD
+    # - YYYY-MM-DD HH:MM
+    # - 2025-11-26T14:30:00（ISO 格式）
+    worn_date: str
     image_url: str  # 圖片 URL 或 base64
     item_ids: Optional[List[int]] = []  # 使用的衣物 ID 列表
 
@@ -101,8 +105,27 @@ async def create_outfit_stage1(
     - 設定穿著日期
     """
     try:
-        # 解析日期
-        worn_date_obj = datetime.strptime(outfit_data.worn_date, "%Y-%m-%d")
+        # 解析日期與時間（支援多種格式），若只提供日期則時間設為 00:00
+        def _parse_worn_date(s: str) -> datetime:
+            if not s or not isinstance(s, str):
+                raise ValueError("worn_date 必須為字串，格式例如 'YYYY-MM-DD' 或 'YYYY-MM-DD HH:MM'")
+            v = s.strip()
+            # 先嘗試 ISO 格式
+            try:
+                return datetime.fromisoformat(v)
+            except Exception:
+                pass
+
+            # 嘗試常見格式
+            fmts = ["%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]
+            for f in fmts:
+                try:
+                    return datetime.strptime(v, f)
+                except Exception:
+                    continue
+            raise ValueError("無法解析的日期格式，請使用 'YYYY-MM-DD' 或 'YYYY-MM-DD HH:MM' 或 ISO 字串")
+
+        worn_date_obj = _parse_worn_date(outfit_data.worn_date)
         
         # 檢查該日期是否已有穿搭
         existing = db.query(Outfit).filter(
@@ -145,7 +168,7 @@ async def create_outfit_stage1(
         return OutfitResponse(
             id=outfit.id,
             name=outfit.name,
-            worn_date=outfit.worn_date.strftime("%Y-%m-%d"),
+            worn_date=outfit.worn_date.strftime("%Y-%m-%d %H:%M"),
             image_url=outfit.image_url,
             description=outfit.description,
             tags=outfit.tags,
@@ -203,7 +226,7 @@ async def update_outfit_stage2(
         return OutfitResponse(
             id=outfit.id,
             name=outfit.name,
-            worn_date=outfit.worn_date.strftime("%Y-%m-%d"),
+            worn_date=outfit.worn_date.strftime("%Y-%m-%d %H:%M"),
             image_url=outfit.image_url,
             description=outfit.description,
             tags=outfit.tags,
@@ -218,6 +241,19 @@ async def update_outfit_stage2(
         db.rollback()
         logger.error(f"更新穿搭失敗: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"更新穿搭失敗: {str(e)}")
+
+
+
+@router.put("/outfits/{outfit_id}", response_model=OutfitResponse)
+async def replace_outfit(
+    outfit_id: int,
+    outfit_data: OutfitUpdateStage2,
+    current_user: User = Depends(get_current_user_from_header),
+    db: Session = Depends(get_db),
+):
+    """兼容 PUT 方法，等同於 PATCH /outfits/{outfit_id} 的行為，由現有函式處理更新邏輯。"""
+    # delegate to existing implementation to avoid duplicating logic
+    return await update_outfit_stage2(outfit_id=outfit_id, outfit_data=outfit_data, current_user=current_user, db=db)
 
 @router.get("/outfits", response_model=List[OutfitResponse])
 async def list_outfits(
@@ -256,7 +292,7 @@ async def list_outfits(
             OutfitResponse(
                 id=outfit.id,
                 name=outfit.name,
-                worn_date=outfit.worn_date.strftime("%Y-%m-%d"),
+                worn_date=outfit.worn_date.strftime("%Y-%m-%d %H:%M"),
                 image_url=outfit.image_url,
                 description=outfit.description,
                 tags=outfit.tags,
@@ -293,7 +329,7 @@ async def get_outfit(
     return OutfitResponse(
         id=outfit.id,
         name=outfit.name,
-        worn_date=outfit.worn_date.strftime("%Y-%m-%d"),
+        worn_date=outfit.worn_date.strftime("%Y-%m-%d %H:%M"),
         image_url=outfit.image_url,
         description=outfit.description,
         tags=outfit.tags,

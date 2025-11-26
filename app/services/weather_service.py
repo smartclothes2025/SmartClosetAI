@@ -141,6 +141,21 @@ class WeatherService:
             logger.error(f"❌ 獲取天氣資訊失敗：{str(e)}", exc_info=True)
             return None
     
+    async def get_weather_info(self, city: str = "Taoyuan", country_code: str = "TW") -> Optional[Dict[str, Any]]:
+        """取得指定城市的天氣資訊並附加穿搭建議。
+        
+        這是給小助手等服務呼叫的統一介面，內部會：
+        1. 呼叫 get_weather_by_city 拿到 OpenWeather 的原始資料
+        2. 使用 get_weather_based_clothing_advice 產生文字建議，存到 suggestion 欄位
+        """
+        weather_info = await self.get_weather_by_city(city=city, country_code=country_code)
+        if not weather_info:
+            return None
+        
+        suggestion = self.get_weather_based_clothing_advice(weather_info)
+        weather_info["suggestion"] = suggestion
+        return weather_info
+    
     def get_weather_based_clothing_advice(self, weather_info: Dict[str, Any]) -> str:
         """
         根據天氣資訊生成穿搭建議

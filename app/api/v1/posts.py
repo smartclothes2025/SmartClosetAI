@@ -1,5 +1,14 @@
 # app/api/v1/posts.py
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form, status, Query
+from fastapi import (
+    APIRouter,
+    UploadFile,
+    File,
+    Depends,
+    HTTPException,
+    Form,
+    status,
+    Query,
+)
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -7,33 +16,43 @@ from typing import Optional, List, Any, Dict
 from pathlib import Path
 from datetime import datetime, timezone
 from dotenv import load_dotenv
-import logging, json, os, re, uuid as _uuid
+import logging
+import json
+import os
+import re
+import uuid as _uuid
+import requests
 
-# 使用你的 storage.py
 from app.services.storage import (
     upload_file_to_gcs_from_bytes,
     delete_file_from_gcs,
     generate_signed_url_from_gcs_uri,
 )
-
 from app.core.db import get_db
-from app.api.v1.auth import get_current_user
 
 load_dotenv()
 logger = logging.getLogger("uvicorn.error")
 
-# 不加 prefix；由 api/v1/router.py 補上 /posts
+# 這支 router 由 /api/v1/router.py 加上 /posts prefix
 router = APIRouter(tags=["貼文"], redirect_slashes=False)
+
 security_optional = HTTPBearer(auto_error=False)
 security_strict = HTTPBearer(auto_error=False)
 
-# 建議貼文與衣櫃不同 bucket
+
 def _clean_env(v: Optional[str]) -> Optional[str]:
     if not v:
         return v
     return v.strip().strip('"').strip("'")
 
-GCS_BUCKET_POST = _clean_env(os.getenv("GCS_BUCKET_POST")) or _clean_env(os.getenv("GCS_BUCKET_NAME")) or "smartclothes_post"
+
+# 建議貼文與衣櫃不同 bucket
+GCS_BUCKET_POST = (
+    _clean_env(os.getenv("GCS_BUCKET_POST"))
+    or _clean_env(os.getenv("GCS_BUCKET_NAME"))
+    or "smartclothes_post"
+)
+
 ALLOWED_VISIBILITY = {"public", "friends", "private"}
 
 
@@ -41,32 +60,33 @@ def current_user_from_header(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_strict),
     db: Session = Depends(get_db),
 ):
-    """從 Authorization Bearer 取得當前使用者"""
+    """
+    解析 Authorization Bearer，格式預期為：
+    Bearer user-<uuid>-token
+    """
     if not credentials or not credentials.credentials:
         raise HTTPException(status_code=401, detail="未提供 Authorization Bearer")
-    
+
     token = credentials.credentials
     prefix = "user-"
     suffix = "-token"
-    
-    # 驗證 token 格式
+
     if not (isinstance(token, str) and token.startswith(prefix) and token.endswith(suffix)):
         raise HTTPException(status_code=401, detail="登入已過期或無效")
-    
-    # 解析使用者 ID
-    user_id = token[len(prefix):-len(suffix)] if len(token) > (len(prefix) + len(suffix)) else ""
-    
+
+    user_id = token[len(prefix) : -len(suffix)] if len(token) > (len(prefix) + len(suffix)) else ""
+
     try:
-        _uuid.UUID(user_id)  # 驗證 UUID 格式
+        _uuid.UUID(user_id)
     except Exception:
         raise HTTPException(status_code=401, detail="登入已過期或無效")
-    
-    # 查詢資料庫
+
     from app.models.auth import User
+
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="使用者不存在")
-    
+
     return user
 
 
@@ -78,10 +98,13 @@ def _sanitize_name(raw: str) -> str:
 
 
 def _https_from_gcs(gcs_uri: str) -> str:
-    # 簽名網址有效時間可調整
+    """由 gs:// 產生簽名網址（貼文圖片仍使用簽名 URL）"""
     return generate_signed_url_from_gcs_uri(gcs_uri, expiration_minutes=60)
 
 
+# ---------------------------
+# 建立貼文（單張圖片）
+# ---------------------------
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_post(
     file: Optional[UploadFile] = File(None),
@@ -93,64 +116,54 @@ async def create_post(
     current_user=Depends(current_user_from_header),
 ):
     """
-    以單張圖片建立一篇貼文；前端可多次呼叫以多張圖建立多篇貼文。
-    （若要一篇含多圖，可再增一支 append-media API）
+    以單張圖片建立一篇貼文。
+    前端若要多圖，可多次呼叫 /media API。
     """
     try:
-        # 檢查是否有文件
         if not file:
             raise HTTPException(status_code=400, detail="必須上傳圖片檔案")
-        
-        # 讀檔
+
         await file.seek(0)
         file_bytes = await file.read()
         ext = (Path(file.filename).suffix or ".jpg").lower()
-        
-        # ✅ 使用貼文標題作為檔名（優先），否則使用原始檔名
+
+        # 以貼文標題為檔名，沒有就用原檔名
         if title and title.strip():
             stem = _sanitize_name(title.strip())
         else:
             stem = _sanitize_name(Path(file.filename).stem or "post")
 
-        # ✅ 處理重複檔名：檢查是否存在，存在則加上 _1, _2, ...
         user_folder = f"posts/{getattr(current_user, 'id', 'unknown')}"
         base_object_name = f"{user_folder}/{stem}{ext}"
         object_name = base_object_name
-        
-        # 檢查檔案是否存在，如果存在就加上數字後綴
-        client = None
+
+        # 嘗試避免重覆檔名
         try:
             from google.cloud import storage as gcs_storage
+
             client = gcs_storage.Client()
             bucket = client.bucket(GCS_BUCKET_POST)
-            
             counter = 1
             while bucket.blob(object_name).exists():
                 object_name = f"{user_folder}/{stem}_{counter}{ext}"
                 counter += 1
-                if counter > 100:  # 安全上限，避免無限迴圈
+                if counter > 100:
                     logger.warning(f"檔名重複次數過多，使用時間戳: {stem}")
-                    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-                    object_name = f"{user_folder}/{stem}_{timestamp}{ext}"
+                    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+                    object_name = f"{user_folder}/{stem}_{ts}{ext}"
                     break
-            
-            if counter > 1:
-                logger.info(f"檔名重複，使用: {object_name}")
         except Exception as e:
             logger.warning(f"無法檢查檔案是否存在，使用原始檔名: {e}")
             object_name = base_object_name
-        
+
         object_name = object_name.lstrip("/")
-        
-        # MIME type
+
         mime = "image/jpeg"
         if ext == ".png":
             mime = "image/png"
         elif ext == ".webp":
             mime = "image/webp"
 
-        # 上傳 GCS（私有，前端以簽名網址讀）
-        # ❌ 不再支援 SKIP_GCS_UPLOAD，所有圖片必須上傳到 GCS
         try:
             gcs_uri = upload_file_to_gcs_from_bytes(
                 file_bytes=file_bytes,
@@ -162,7 +175,6 @@ async def create_post(
             https_url = _https_from_gcs(gcs_uri)
         except Exception as e:
             logger.exception("GCS upload or signed URL generation failed")
-            # 在開發環境回傳詳細錯誤以便除錯；正式環境回傳簡短訊息
             if os.getenv("ENV", "development") == "development":
                 raise HTTPException(status_code=500, detail=f"GCS failure: {e}")
             else:
@@ -172,22 +184,26 @@ async def create_post(
         if vis not in ALLOWED_VISIBILITY:
             vis = "public"
 
-        # ✅ 資料庫只儲存 gcs_uri (短的 gs:// 格式)
-        # url 會在讀取時動態生成
-        media_obj = [{
-            "type": "image",
-            "gcs_uri": gcs_uri,
-            "is_cover": True
-        }]
+        media_obj = [
+            {
+                "type": "image",
+                "gcs_uri": gcs_uri,
+                "is_cover": True,
+            }
+        ]
 
         now = datetime.now(timezone.utc)
-        sql = text("""
+        sql = text(
+            """
             INSERT INTO user_post
-                (user_id, type, title, tag, content, media, visibility, like_count, comment_count, created_at, updated_at)
+                (user_id, type, title, tag, content, media, visibility,
+                 like_count, comment_count, created_at, updated_at)
             VALUES
-                (:user_id, :type, :title, :tag, :content, :media, :visibility, :like_count, :comment_count, :created_at, :updated_at)
+                (:user_id, :type, :title, :tag, :content, :media, :visibility,
+                 :like_count, :comment_count, :created_at, :updated_at)
             RETURNING *;
-        """)
+            """
+        )
         params = {
             "user_id": getattr(current_user, "id", None),
             "type": "post",
@@ -222,6 +238,9 @@ async def create_post(
         raise HTTPException(status_code=500, detail=f"建立貼文失敗: {e}")
 
 
+# ---------------------------
+# 貼文列表
+# ---------------------------
 @router.get("/")
 def list_posts(
     limit: int = 20,
@@ -231,95 +250,112 @@ def list_posts(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
 ):
     """
-    列出貼文。
-    - scope=mine: 只列出自己的貼文（需要登入）
-    - scope=all: 列出全站貼文（admin 專用，需要登入）
-    - visibility=public: 列出所有公開貼文（不需要登入）
+    列出貼文：
+    - visibility=public：任何人可看（不用登入）
+    - scope=mine：登入者自己的貼文
+    - scope=all：管理員列出全站貼文
     """
     try:
-        # ✅ 如果指定 visibility=public，不需要登入即可查看
         if visibility == "public":
-            sql = text("""
-                SELECT 
+            # 公開貼文清單（不用登入）
+            sql = text(
+                """
+                SELECT
                     p.*,
                     u.display_name,
                     u.email,
-                    u.avatar_url
+                    u.picture AS picture
                 FROM user_post p
                 LEFT JOIN app_users u ON p.user_id = u.id
-                WHERE p.visibility = 'public' 
-                ORDER BY p.created_at DESC 
+                WHERE p.visibility = 'public'
+                ORDER BY p.created_at DESC
                 LIMIT :limit
-            """)
+                """
+            )
             params = {"limit": limit}
         else:
-            # 需要登入的情況
+            # 需要登入
             if not credentials or not credentials.credentials:
                 raise HTTPException(status_code=401, detail="未提供 Authorization Bearer")
-            
+
             current_user = current_user_from_header(credentials, db)
             role = str(getattr(current_user, "role", "") or "").lower()
             is_admin = role == "admin"
-            
+
             if scope == "all" and is_admin:
-                # Admin 查看全站
+                # 管理員看全站
                 if visibility:
-                    sql = text("""
-                        SELECT 
+                    sql = text(
+                        """
+                        SELECT
                             p.*,
                             u.display_name,
                             u.email,
-                            u.avatar_url
+                            u.picture AS picture
                         FROM user_post p
                         LEFT JOIN app_users u ON p.user_id = u.id
-                        WHERE p.visibility = :visibility 
-                        ORDER BY p.created_at DESC 
+                        WHERE p.visibility = :visibility
+                        ORDER BY p.created_at DESC
                         LIMIT :limit
-                    """)
+                        """
+                    )
                     params = {"visibility": visibility, "limit": limit}
                 else:
-                    sql = text("""
-                        SELECT 
+                    sql = text(
+                        """
+                        SELECT
                             p.*,
                             u.display_name,
                             u.email,
-                            u.avatar_url
+                            u.picture AS picture
                         FROM user_post p
                         LEFT JOIN app_users u ON p.user_id = u.id
-                        ORDER BY p.created_at DESC 
+                        ORDER BY p.created_at DESC
                         LIMIT :limit
-                    """)
+                        """
+                    )
                     params = {"limit": limit}
             else:
-                # 一般使用者查看自己的貼文
+                # 一般使用者看自己的
                 if visibility:
-                    sql = text("""
-                        SELECT 
+                    sql = text(
+                        """
+                        SELECT
                             p.*,
                             u.display_name,
                             u.email,
-                            u.avatar_url
+                            u.picture AS picture
                         FROM user_post p
                         LEFT JOIN app_users u ON p.user_id = u.id
-                        WHERE p.user_id = :uid AND p.visibility = :visibility 
-                        ORDER BY p.created_at DESC 
+                        WHERE p.user_id = :uid AND p.visibility = :visibility
+                        ORDER BY p.created_at DESC
                         LIMIT :limit
-                    """)
-                    params = {"uid": getattr(current_user, "id", None), "visibility": visibility, "limit": limit}
+                        """
+                    )
+                    params = {
+                        "uid": getattr(current_user, "id", None),
+                        "visibility": visibility,
+                        "limit": limit,
+                    }
                 else:
-                    sql = text("""
-                        SELECT 
+                    sql = text(
+                        """
+                        SELECT
                             p.*,
                             u.display_name,
                             u.email,
-                            u.avatar_url
+                            u.picture AS picture
                         FROM user_post p
                         LEFT JOIN app_users u ON p.user_id = u.id
-                        WHERE p.user_id = :uid 
-                        ORDER BY p.created_at DESC 
+                        WHERE p.user_id = :uid
+                        ORDER BY p.created_at DESC
                         LIMIT :limit
-                    """)
-                    params = {"uid": getattr(current_user, "id", None), "limit": limit}
+                        """
+                    )
+                    params = {
+                        "uid": getattr(current_user, "id", None),
+                        "limit": limit,
+                    }
 
         rows = db.execute(sql, params).mappings().all()
         res: List[Dict[str, Any]] = []
@@ -342,6 +378,9 @@ def list_posts(
         raise HTTPException(status_code=500, detail="讀取貼文失敗")
 
 
+# ---------------------------
+# 收藏相關
+# ---------------------------
 def _ensure_favorite_table(db: Session) -> None:
     """在第一次使用時建立 user_post_favorite 表（若不存在）。"""
     try:
@@ -391,7 +430,6 @@ def toggle_favorite_post(
     try:
         _ensure_favorite_table(db)
 
-        # 確認貼文存在
         exists = db.execute(
             text("SELECT 1 FROM user_post WHERE id = :id"), {"id": post_id}
         ).scalar()
@@ -458,7 +496,7 @@ def list_my_favorite_posts(
                 p.*,
                 u.display_name,
                 u.email,
-                u.avatar_url
+                u.picture AS picture
             FROM user_post_favorite f
             JOIN user_post p ON f.post_id = p.id
             LEFT JOIN app_users u ON p.user_id = u.id
@@ -489,6 +527,9 @@ def list_my_favorite_posts(
         raise HTTPException(status_code=500, detail=f"讀取收藏貼文失敗: {e}")
 
 
+# ---------------------------
+# 使用者的公開貼文（Profile 用）
+# ---------------------------
 @router.get("/user/{user_id}")
 def list_user_public_posts(
     user_id: str,
@@ -504,7 +545,7 @@ def list_user_public_posts(
                 u.display_name,
                 u.email,
                 u.interformation,
-                u.avatar_url
+                u.picture AS picture
             FROM user_post p
             LEFT JOIN app_users u ON p.user_id = u.id
             WHERE p.user_id = :uid AND p.visibility = 'public'
@@ -534,6 +575,9 @@ def list_user_public_posts(
         raise HTTPException(status_code=500, detail="讀取使用者貼文失敗")
 
 
+# ---------------------------
+# 編輯貼文（文字）
+# ---------------------------
 @router.put("/{post_id}")
 def update_post(
     post_id: _uuid.UUID,
@@ -596,17 +640,210 @@ def update_post(
         raise HTTPException(status_code=500, detail=f"更新貼文失敗: {e}")
 
 
+# ---------------------------
+# 圖片媒體：新增
+# ---------------------------
+@router.post("/{post_id}/media", status_code=status.HTTP_201_CREATED)
+async def append_post_media(
+    post_id: _uuid.UUID,
+    file: Optional[UploadFile] = File(None),
+    image_url: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_user=Depends(current_user_from_header),
+):
+    """將新圖片加入既有貼文的 media 陣列。"""
+    try:
+        row = db.execute(
+            text("SELECT * FROM user_post WHERE id = :id"), {"id": post_id}
+        ).mappings().first()
+        if not row:
+            raise HTTPException(status_code=404, detail="找不到該貼文")
+
+        role = str(getattr(current_user, "role", "") or "").lower()
+        is_admin = role == "admin"
+        if (row["user_id"] != getattr(current_user, "id", None)) and (not is_admin):
+            raise HTTPException(status_code=403, detail="無權修改此貼文")
+
+        media_list = []
+        try:
+            media_list = json.loads(row.get("media") or "[]")
+        except Exception:
+            media_list = []
+
+        gcs_uri = None
+        if file:
+            await file.seek(0)
+            file_bytes = await file.read()
+            ext = (Path(file.filename).suffix or ".jpg").lower()
+            stem = _sanitize_name(Path(file.filename).stem or "media")
+            user_folder = f"posts/{getattr(current_user, 'id', 'unknown')}/{post_id}"
+            object_name = f"{user_folder}/{stem}{ext}".lstrip("/")
+
+            try:
+                gcs_uri = upload_file_to_gcs_from_bytes(
+                    file_bytes=file_bytes,
+                    destination_blob_name=object_name,
+                    mime_type=("image/png" if ext == ".png" else "image/jpeg"),
+                    bucket_name=GCS_BUCKET_POST,
+                    public=False,
+                )
+            except Exception as e:
+                logger.exception("upload file to gcs failed")
+                raise HTTPException(status_code=500, detail=f"媒體上傳失敗: {e}")
+        elif image_url:
+            image_url = image_url.strip()
+            if image_url.startswith("gs://"):
+                gcs_uri = image_url
+            else:
+                try:
+                    resp = requests.get(image_url, timeout=15)
+                    if resp.status_code != 200:
+                        raise Exception(f"HTTP {resp.status_code}")
+                    file_bytes = resp.content
+                    ext = ".jpg"
+                    user_folder = f"posts/{getattr(current_user, 'id', 'unknown')}/{post_id}"
+                    object_name = (
+                        f"{user_folder}/{_sanitize_name(Path(image_url).stem or 'media')}{ext}"
+                    ).lstrip("/")
+                    gcs_uri = upload_file_to_gcs_from_bytes(
+                        file_bytes=file_bytes,
+                        destination_blob_name=object_name,
+                        mime_type="image/jpeg",
+                        bucket_name=GCS_BUCKET_POST,
+                        public=False,
+                    )
+                except Exception as e:
+                    logger.exception("download or upload external image failed")
+                    raise HTTPException(
+                        status_code=400, detail=f"無法處理提供的 image_url: {e}"
+                    )
+        else:
+            raise HTTPException(status_code=400, detail="必須提供上傳檔案或 image_url")
+
+        if gcs_uri:
+            new_media = {"type": "image", "gcs_uri": gcs_uri, "is_cover": False}
+            media_list.append(new_media)
+
+            try:
+                result = db.execute(
+                    text(
+                        "UPDATE user_post SET media = :media, updated_at = NOW() "
+                        "WHERE id = :id RETURNING media"
+                    ),
+                    {"media": json.dumps(media_list), "id": post_id},
+                ).mappings().first()
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
+            updated_media = []
+            try:
+                updated_media = json.loads(result.get("media") or "[]") if result else media_list
+            except Exception:
+                updated_media = media_list
+
+            for m in updated_media:
+                if isinstance(m, dict) and str(m.get("gcs_uri", "")).startswith("gs://"):
+                    m["url"] = _https_from_gcs(m["gcs_uri"])
+
+            return {"post_id": str(post_id), "media": updated_media}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception("append_post_media failed")
+        raise HTTPException(status_code=500, detail=f"新增媒體失敗: {e}")
+
+
+# ---------------------------
+# 圖片媒體：刪除
+# ---------------------------
+@router.delete("/{post_id}/media")
+def delete_post_media(
+    post_id: _uuid.UUID,
+    gcs_uri: str = Query(...),
+    db: Session = Depends(get_db),
+    current_user=Depends(current_user_from_header),
+):
+    """從貼文中刪除指定的媒體（by gcs_uri），並嘗試刪除 GCS 物件。"""
+    try:
+        row = db.execute(
+            text("SELECT * FROM user_post WHERE id = :id"), {"id": post_id}
+        ).mappings().first()
+        if not row:
+            raise HTTPException(status_code=404, detail="找不到該貼文")
+
+        role = str(getattr(current_user, "role", "") or "").lower()
+        is_admin = role == "admin"
+        if (row["user_id"] != getattr(current_user, "id", None)) and (not is_admin):
+            raise HTTPException(status_code=403, detail="無權修改此貼文")
+
+        try:
+            media_list = json.loads(row.get("media") or "[]")
+        except Exception:
+            media_list = []
+
+        found = False
+        new_media = []
+        for m in media_list:
+            if isinstance(m, dict) and str(m.get("gcs_uri", "")) == gcs_uri:
+                found = True
+                try:
+                    if isinstance(gcs_uri, str) and gcs_uri.startswith("gs://"):
+                        delete_file_from_gcs(gcs_uri)
+                except Exception:
+                    logger.warning(f"failed to delete gcs object: {gcs_uri}")
+                continue
+            new_media.append(m)
+
+        if not found:
+            raise HTTPException(status_code=404, detail="找不到指定的媒體項目")
+
+        try:
+            result = db.execute(
+                text(
+                    "UPDATE user_post SET media = :media, updated_at = NOW() "
+                    "WHERE id = :id RETURNING media"
+                ),
+                {"media": json.dumps(new_media), "id": post_id},
+            ).mappings().first()
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
+        updated_media = []
+        try:
+            updated_media = json.loads(result.get("media") or "[]") if result else new_media
+        except Exception:
+            updated_media = new_media
+
+        for m in updated_media:
+            if isinstance(m, dict) and str(m.get("gcs_uri", "")).startswith("gs://"):
+                m["url"] = _https_from_gcs(m["gcs_uri"])
+
+        return {"post_id": str(post_id), "media": updated_media}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception("delete_post_media failed")
+        raise HTTPException(status_code=500, detail=f"刪除媒體失敗: {e}")
+
+
+# ---------------------------
+# 按讚（toggle）
+# ---------------------------
 @router.post("/{post_id}/like")
 def like_post(
     post_id: _uuid.UUID,
     db: Session = Depends(get_db),
     current_user=Depends(current_user_from_header),
 ):
-    """對貼文按讚 / 收回愛心（toggle）。
-
-    - 若目前尚未按讚：新增一筆 user_post_like 紀錄，like_count +1。
-    - 若已按讚：刪除該紀錄，like_count -1（不少於 0）。
-    回傳最新的 like_count 與 liked 狀態。
+    """
+    對貼文按讚 / 收回愛心（toggle）。
+    回傳：post_id, like_count, liked
     """
 
     def _ensure_like_table(inner_db: Session) -> None:
@@ -641,12 +878,10 @@ def like_post(
     try:
         _ensure_like_table(db)
 
-        # 先確認貼文存在
         row = db.execute(
             text("SELECT like_count FROM user_post WHERE id = :id"),
             {"id": post_id},
         ).mappings().first()
-
         if not row:
             raise HTTPException(status_code=404, detail="找不到該貼文")
 
@@ -654,7 +889,6 @@ def like_post(
         if not user_id:
             raise HTTPException(status_code=401, detail="找不到使用者資訊")
 
-        # 檢查是否已經按讚
         existing = db.execute(
             text(
                 "SELECT id FROM user_post_like WHERE post_id = :pid AND user_id = :uid"
@@ -663,7 +897,6 @@ def like_post(
         ).mappings().first()
 
         if existing:
-            # 已按讚 → 收回愛心
             db.execute(
                 text("DELETE FROM user_post_like WHERE id = :id"),
                 {"id": existing["id"]},
@@ -682,7 +915,6 @@ def like_post(
             ).mappings().first()
             liked = False
         else:
-            # 尚未按讚 → 新增一筆紀錄
             db.execute(
                 text(
                     """
@@ -708,13 +940,11 @@ def like_post(
             liked = True
 
         db.commit()
-
         return {
             "post_id": str(post_id),
             "like_count": updated["like_count"],
             "liked": liked,
         }
-
     except HTTPException:
         raise
     except Exception as e:
@@ -722,31 +952,37 @@ def like_post(
         logger.exception("like_post failed")
         raise HTTPException(status_code=500, detail=f"按讚失敗: {e}")
 
+
+# ---------------------------
+# 讀取單一貼文（含作者頭貼）
+# ---------------------------
 @router.get("/{post_id}")
 def get_post(
     post_id: _uuid.UUID,
     db: Session = Depends(get_db),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
 ):
-    """讀取單一貼文。"""
+    """讀取單一貼文，附帶作者 display_name / picture 與 liked_by_me。"""
     try:
-        # ✅ 加入 JOIN 查詢，同時獲取使用者資訊
-        sql = text("""
-            SELECT 
+        sql = text(
+            """
+            SELECT
                 p.*,
                 u.display_name,
                 u.email,
-                u.avatar_url
+                u.picture AS picture
             FROM user_post p
             LEFT JOIN app_users u ON p.user_id = u.id
             WHERE p.id = :id
-        """)
+            """
+        )
         row = db.execute(sql, {"id": post_id}).mappings().first()
         if not row:
             raise HTTPException(status_code=404, detail="找不到該貼文")
+
         item = dict(row)
 
-        # 判斷目前使用者是否已按讚（liked_by_me）
+        # 判斷目前使用者是否已按讚
         liked_by_me = False
         if credentials and credentials.credentials:
             try:
@@ -766,6 +1002,14 @@ def get_post(
                 logger.exception("get_post liked_by_me check failed")
         item["liked_by_me"] = liked_by_me
 
+        # 補上 nested user 物件，給前端方便使用（同時保留平面欄位）
+        item["user"] = {
+            "id": item.get("user_id"),
+            "display_name": item.get("display_name"),
+            "email": item.get("email"),
+            "picture": item.get("picture"),
+        }
+
         try:
             media_parsed = json.loads(item.get("media") or "[]")
             for m in media_parsed:
@@ -774,6 +1018,7 @@ def get_post(
             item["media"] = media_parsed
         except Exception:
             pass
+
         return item
     except HTTPException:
         raise
@@ -782,33 +1027,29 @@ def get_post(
         raise HTTPException(status_code=500, detail="讀取貼文失敗")
 
 
+# ---------------------------
+# 留言：確保資料表存在
+# ---------------------------
 def _ensure_comment_table(db: Session) -> None:
-    """在第一次使用時建立 user_post_comment 表（若不存在）。"""
+    """
+    確保 user_post_comment 表存在且欄位齊全。
+    若是舊表（沒有 user_display_name / user_picture），會自動補欄位。
+    """
     try:
-        # 不使用外鍵，避免不同環境下 user_post / app_users schema 差異導致錯誤
+        # 1. 最小結構（舊環境可能只有 id / post_id / content / created_at）
         db.execute(
             text(
                 """
                 CREATE TABLE IF NOT EXISTS user_post_comment (
                     id SERIAL PRIMARY KEY,
                     post_id UUID NOT NULL,
-                    user_display_name TEXT,
-                    user_picture TEXT,
                     content TEXT NOT NULL,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
                 """
             )
         )
-        db.execute(
-            text(
-                """
-                CREATE INDEX IF NOT EXISTS idx_user_post_comment_post_id
-                ON user_post_comment(post_id);
-                """
-            )
-        )
-        # 若是先前建立的舊表，補上缺少的欄位避免 SELECT 失敗
+        # 2. 補欄位（若已存在則略過）
         db.execute(
             text(
                 """
@@ -825,6 +1066,15 @@ def _ensure_comment_table(db: Session) -> None:
                 """
             )
         )
+        # 3. 索引
+        db.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_post_comment_post_id
+                ON user_post_comment(post_id);
+                """
+            )
+        )
         db.commit()
     except Exception:
         db.rollback()
@@ -832,6 +1082,9 @@ def _ensure_comment_table(db: Session) -> None:
         raise HTTPException(status_code=500, detail="初始化留言表失敗")
 
 
+# ---------------------------
+# 留言：列表
+# ---------------------------
 @router.get("/{post_id}/comments")
 def list_post_comments(
     post_id: _uuid.UUID,
@@ -879,6 +1132,9 @@ def list_post_comments(
         raise HTTPException(status_code=500, detail=f"讀取留言失敗: {e}")
 
 
+# ---------------------------
+# 留言：新增
+# ---------------------------
 @router.post("/{post_id}/comments")
 def create_post_comment(
     post_id: _uuid.UUID,
@@ -894,7 +1150,6 @@ def create_post_comment(
     try:
         _ensure_comment_table(db)
 
-        # 確認貼文存在
         exists = db.execute(
             text("SELECT 1 FROM user_post WHERE id = :id"), {"id": post_id}
         ).scalar()
@@ -905,8 +1160,10 @@ def create_post_comment(
             db.execute(
                 text(
                     """
-                    INSERT INTO user_post_comment (post_id, user_display_name, user_picture, content, created_at)
-                    VALUES (:pid, :uname, :upic, :content, NOW())
+                    INSERT INTO user_post_comment
+                        (post_id, user_display_name, user_picture, content, created_at)
+                    VALUES
+                        (:pid, :uname, :upic, :content, NOW())
                     RETURNING id, post_id, user_display_name, user_picture, content, created_at;
                     """
                 ),
@@ -922,7 +1179,6 @@ def create_post_comment(
             .first()
         )
 
-        # 更新貼文的留言數
         db.execute(
             text(
                 """
@@ -958,6 +1214,9 @@ def create_post_comment(
         raise HTTPException(status_code=500, detail=f"留言失敗: {e}")
 
 
+# ---------------------------
+# 刪除貼文
+# ---------------------------
 @router.delete("/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_post(
     post_id: _uuid.UUID,
@@ -966,7 +1225,9 @@ def delete_post(
 ):
     """刪除貼文（擁有者或 admin），並嘗試刪除 GCS 物件。"""
     try:
-        row = db.execute(text("SELECT * FROM user_post WHERE id = :id"), {"id": post_id}).mappings().first()
+        row = db.execute(
+            text("SELECT * FROM user_post WHERE id = :id"), {"id": post_id}
+        ).mappings().first()
         if not row:
             raise HTTPException(status_code=404, detail="找不到該貼文")
 
@@ -975,7 +1236,6 @@ def delete_post(
         if (row["user_id"] != getattr(current_user, "id", None)) and (not is_admin):
             raise HTTPException(status_code=403, detail="無權刪除此貼文")
 
-        # 嘗試刪除 GCS 檔案（失敗不阻斷 DB 刪除）
         try:
             media = json.loads(row.get("media") or "[]")
             for m in media:
@@ -993,5 +1253,3 @@ def delete_post(
     except Exception as e:
         logger.exception("delete_post failed")
         raise HTTPException(status_code=500, detail=f"刪除貼文失敗: {e}")
-
-# 直接貼到 app/api/v1/posts.py 裡（放在 get_post 後面即可）
