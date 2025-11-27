@@ -107,7 +107,7 @@ def _https_from_gcs(gcs_uri: str) -> str:
 # ---------------------------
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_post(
-    file: Optional[UploadFile] = File(None),
+    files: List[UploadFile] = File(...),
     title: str = Form(""),
     content: str = Form(""),
     visibility: str = Form("public"),
@@ -116,81 +116,89 @@ async def create_post(
     current_user=Depends(current_user_from_header),
 ):
     """
-    以單張圖片建立一篇貼文。
-    前端若要多圖，可多次呼叫 /media API。
+    建立一篇貼文，支援多張圖片上傳。
+    所有圖片將儲存在同一篇貼文的 media 陣列中。
     """
     try:
-        if not file:
-            raise HTTPException(status_code=400, detail="必須上傳圖片檔案")
+        if not files or len(files) == 0:
+            raise HTTPException(status_code=400, detail="必須上傳至少一張圖片")
 
-        await file.seek(0)
-        file_bytes = await file.read()
-        ext = (Path(file.filename).suffix or ".jpg").lower()
-
-        # 以貼文標題為檔名，沒有就用原檔名
+        # 以貼文標題為檔名基礎，沒有就用 "post"
         if title and title.strip():
             stem = _sanitize_name(title.strip())
         else:
-            stem = _sanitize_name(Path(file.filename).stem or "post")
+            stem = _sanitize_name("post")
 
         user_folder = f"posts/{getattr(current_user, 'id', 'unknown')}"
-        base_object_name = f"{user_folder}/{stem}{ext}"
-        object_name = base_object_name
+        
+        # 處理多個檔案上傳
+        media_obj = []
+        for idx, file in enumerate(files):
+            await file.seek(0)
+            file_bytes = await file.read()
+            ext = (Path(file.filename).suffix or ".jpg").lower()
 
-        # 嘗試避免重覆檔名
-        try:
-            from google.cloud import storage as gcs_storage
+            # 如果有多個檔案，加上序號
+            if len(files) > 1:
+                file_stem = f"{stem}_{idx + 1}"
+            else:
+                file_stem = stem
 
-            client = gcs_storage.Client()
-            bucket = client.bucket(GCS_BUCKET_POST)
-            counter = 1
-            while bucket.blob(object_name).exists():
-                object_name = f"{user_folder}/{stem}_{counter}{ext}"
-                counter += 1
-                if counter > 100:
-                    logger.warning(f"檔名重複次數過多，使用時間戳: {stem}")
-                    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-                    object_name = f"{user_folder}/{stem}_{ts}{ext}"
-                    break
-        except Exception as e:
-            logger.warning(f"無法檢查檔案是否存在，使用原始檔名: {e}")
+            base_object_name = f"{user_folder}/{file_stem}{ext}"
             object_name = base_object_name
 
-        object_name = object_name.lstrip("/")
+            # 嘗試避免重覆檔名
+            try:
+                from google.cloud import storage as gcs_storage
 
-        mime = "image/jpeg"
-        if ext == ".png":
-            mime = "image/png"
-        elif ext == ".webp":
-            mime = "image/webp"
+                client = gcs_storage.Client()
+                bucket = client.bucket(GCS_BUCKET_POST)
+                counter = 1
+                while bucket.blob(object_name).exists():
+                    object_name = f"{user_folder}/{file_stem}_{counter}{ext}"
+                    counter += 1
+                    if counter > 100:
+                        logger.warning(f"檔名重複次數過多，使用時間戳: {file_stem}")
+                        ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+                        object_name = f"{user_folder}/{file_stem}_{ts}{ext}"
+                        break
+            except Exception as e:
+                logger.warning(f"無法檢查檔案是否存在，使用原始檔名: {e}")
+                object_name = base_object_name
 
-        try:
-            gcs_uri = upload_file_to_gcs_from_bytes(
-                file_bytes=file_bytes,
-                destination_blob_name=object_name,
-                mime_type=mime,
-                bucket_name=GCS_BUCKET_POST,
-                public=False,
-            )
-            https_url = _https_from_gcs(gcs_uri)
-        except Exception as e:
-            logger.exception("GCS upload or signed URL generation failed")
-            if os.getenv("ENV", "development") == "development":
-                raise HTTPException(status_code=500, detail=f"GCS failure: {e}")
-            else:
-                raise HTTPException(status_code=500, detail="建立貼文失敗（儲存媒體）")
+            object_name = object_name.lstrip("/")
+
+            mime = "image/jpeg"
+            if ext == ".png":
+                mime = "image/png"
+            elif ext == ".webp":
+                mime = "image/webp"
+
+            try:
+                gcs_uri = upload_file_to_gcs_from_bytes(
+                    file_bytes=file_bytes,
+                    destination_blob_name=object_name,
+                    mime_type=mime,
+                    bucket_name=GCS_BUCKET_POST,
+                    public=False,
+                )
+                
+                # 第一張圖片設為封面
+                media_obj.append({
+                    "type": "image",
+                    "gcs_uri": gcs_uri,
+                    "is_cover": idx == 0,
+                })
+            except Exception as e:
+                logger.exception(f"GCS upload failed for file {idx + 1}")
+                if os.getenv("ENV", "development") == "development":
+                    raise HTTPException(status_code=500, detail=f"第 {idx + 1} 張圖片上傳失敗: {e}")
+                else:
+                    raise HTTPException(status_code=500, detail=f"第 {idx + 1} 張圖片上傳失敗")
 
         vis = (visibility or "public").strip().lower()
         if vis not in ALLOWED_VISIBILITY:
             vis = "public"
-
-        media_obj = [
-            {
-                "type": "image",
-                "gcs_uri": gcs_uri,
-                "is_cover": True,
-            }
-        ]
 
         now = datetime.now(timezone.utc)
         sql = text(
