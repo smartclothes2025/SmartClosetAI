@@ -37,11 +37,17 @@ ERR_USER_NOT_FOUND = "使用者不存在"
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    # bcrypt 限制密碼最多 72 字節，超過部分會被忽略
+    # 為了安全和一致性，手動截斷
+    password_bytes = password.encode('utf-8')[:72]
+    return pwd_context.hash(password_bytes)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    # bcrypt 限制密碼最多 72 字節
+    # 確保驗證時使用相同的截斷邏輯
+    password_bytes = plain_password.encode('utf-8')[:72]
+    return pwd_context.verify(password_bytes, hashed_password)
 
 
 # ── Firebase Token 驗證（若前端走 Firebase 登入用） ─────────────────────────────

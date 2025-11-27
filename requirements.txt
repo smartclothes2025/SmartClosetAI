@@ -1,7 +1,7 @@
 annotated-types==0.7.0
 anyio==4.0.0
 attrs==25.3.0
-bcrypt==4.3.0
+bcrypt==3.2.2
 CacheControl==0.14.3
 cachetools==53.2
 certifi==2025.6.15
