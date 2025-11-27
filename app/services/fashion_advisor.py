@@ -14,6 +14,7 @@ from PIL import Image# 用於 download_user_photo_from_gcs
 import httpx # 🔥 為了實現 IP-to-Geo 服務，需要導入 httpx
 
 from .image_generation import image_service as img_gen_service
+from .image_classifier import image_classifier  # 🔥 導入圖片分類服務
 
 try:
     from .weather_service import weather_service
@@ -326,6 +327,9 @@ class FashionAdvisor:
                 logger.warning("Gemini 聊天模型回傳空字串。")
                 return {"type": "text", "text": "抱歉，我暫時無法回答這個問題。"}
 
+            # 移除 Markdown 格式符號（粗體、斜體、代碼符號等）
+            gemini_text = gemini_text.replace("**", "").replace("__", "").replace("*", "").replace("_", "").replace("`", "")
+            
             logger.info(f"Gemini 聊天回應: {gemini_text[:100]}...")
             return {"type": "text", "text": gemini_text}
         except Exception as e:
@@ -427,22 +431,29 @@ class FashionAdvisor:
         self, 
         user_id: str, 
         user_input: str, 
-        user_image_data: Optional[str] = None,
+        user_images: Optional[List[str]] = None,
         picture_uri: Optional[str] = None,
         user_gender: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        處理小助手的用戶輸入（聊天頁面）
+        處理小助手的用戶輸入（聊天頁面）- 支援多圖片上傳
         
         Args:
             user_id: 用戶 ID
             user_input: 用戶輸入的文字
-            user_image_data: 前端上傳的照片 (base64)
+            user_images: 前端上傳的照片列表 (base64)，最多 3 張
             picture_uri: 用戶頭貼 URI
             user_gender: 用戶性別
+            
+        四種圖片組合策略：
+            1. 上傳臉部 -> 用戶上傳的臉部 + 衣櫥的2件衣物
+            2. 上傳衣物 -> 用戶上傳的衣物 + 用戶頭貼
+            3. 上傳衣物+臉部 -> 用戶上傳的衣物 + 用戶上傳的臉部
+            4. 沒有上傳圖片 -> 用戶頭貼 + 衣櫥內衣物（原有功能）
         """
         logger.info(f"🤖 小助手處理請求：User ID: {user_id}")
         logger.info(f"   輸入: {user_input}")
+        logger.info(f"   上傳圖片數量: {len(user_images) if user_images else 0}")
         
         # 1. 獲取天氣資訊
         weather_info = None
@@ -461,102 +472,149 @@ class FashionAdvisor:
         wardrobe_items = self.get_wardrobe_items(user_id)
         logger.info(f"👔 獲取到 {len(wardrobe_items)} 件衣物")
         
-        # 3. 處理照片優先級
-        user_photo_base64 = None
-        photo_source = "預設模特兒"
+        # 3. 🔥 分類上傳的圖片（臉部 vs 衣物）
+        face_images = []
+        clothing_images = []
         
-        # 優先級 1: 前端上傳的照片（最高優先級）
-        if user_image_data:
+        if user_images and len(user_images) > 0:
+            logger.info(f"\n{'='*60}")
+            logger.info(f"🔍 開始分類上傳的圖片...")
+            logger.info(f"{'='*60}\n")
             
-            # 🔥 關鍵修正：確保移除 Data URI Scheme，才能讓底層的 base64.b64decode 成功
-            if user_image_data.startswith("data:image"):
-                # 參考 virtual_fitting.py 的處理方式
-                user_image_data = (
-                    user_image_data.split(",", 1)[1]
-                    if "," in user_image_data
-                    else user_image_data
-                )
-                logger.info("✅ 優先級 1: 已移除 Data URI Scheme 前綴")
-
-            try:
-                logger.info("📸 優先級 1: 處理前端上傳照片")
-                user_photo_base64 = user_image_data  
-
-                # 為了日誌和基本檢查，可以嘗試解碼（這部分現在應該會成功）
+            classified_result = image_classifier.classify_images(user_images)
+            
+            face_images = classified_result.get("face_images", [])
+            clothing_images = classified_result.get("clothing_images", [])
+            unknown_images = classified_result.get("unknown_images", [])
+            
+            logger.info(f"\n📊 分類結果總結:")
+            logger.info(f"   臉部照片: {len(face_images)} 張")
+            logger.info(f"   衣物照片: {len(clothing_images)} 張")
+            logger.info(f"   無法判斷: {len(unknown_images)} 張")
+            
+            # 無法判斷的圖片視為衣物（保守策略）
+            if unknown_images:
+                logger.info(f"   ℹ️ 將 {len(unknown_images)} 張無法判斷的圖片視為衣物")
+                clothing_images.extend(unknown_images)
+        
+        # 4. 🔥 決定照片和衣物來源（四種策略）
+        final_face_photo = None
+        final_clothing_items = []
+        photo_source = ""
+        strategy = ""
+        
+        has_uploaded_face = len(face_images) > 0
+        has_uploaded_clothing = len(clothing_images) > 0
+        
+        if has_uploaded_face and has_uploaded_clothing:
+            # 策略 3: 上傳衣物 + 臉部
+            strategy = "策略3: 上傳衣物+臉部"
+            final_face_photo = face_images[0]  # 使用第一張臉部照片
+            photo_source = "上傳臉部照片"
+            
+            # 衣物來源：上傳的衣物圖片（最多2張）
+            final_clothing_items = [
+                {"name": f"上傳衣物_{idx+1}", "category": "tops", "img": img}
+                for idx, img in enumerate(clothing_images[:2])
+            ]
+            logger.info(f"✅ {strategy}")
+            logger.info(f"   臉部: 使用上傳照片")
+            logger.info(f"   衣物: 使用 {len(final_clothing_items)} 件上傳衣物")
+            
+        elif has_uploaded_face and not has_uploaded_clothing:
+            # 策略 1: 上傳臉部 + 衣櫥衣物
+            strategy = "策略1: 上傳臉部+衣櫥衣物"
+            final_face_photo = face_images[0]
+            photo_source = "上傳臉部照片"
+            
+            # 衣物來源：從衣櫥隨機選擇2件
+            clothing_dicts = [
+                {"name": item.name, "category": item.category, "img": item.cover_image_url}
+                for item in wardrobe_items if item.cover_image_url
+            ]
+            if len(clothing_dicts) > 2:
+                final_clothing_items = self._smart_select_clothing_items(clothing_dicts, max_items=2)
+            else:
+                final_clothing_items = clothing_dicts
+            
+            logger.info(f"✅ {strategy}")
+            logger.info(f"   臉部: 使用上傳照片")
+            logger.info(f"   衣物: 從衣櫥選擇 {len(final_clothing_items)} 件")
+            
+        elif not has_uploaded_face and has_uploaded_clothing:
+            # 策略 2: 上傳衣物 + 用戶頭貼
+            strategy = "策略2: 上傳衣物+用戶頭貼"
+            
+            # 臉部來源：嘗試下載用戶頭貼
+            if picture_uri and picture_uri.strip():
                 try:
-                    user_img_bytes = base64.b64decode(user_image_data)
-                    user_img = PILImage.open(BytesIO(user_img_bytes))
-                    logger.info(f"✅ 照片驗證通過 - 格式: {user_img.format}, 尺寸: {user_img.size[0]}x{user_img.size[1]}, 模式: {user_img.mode}")
+                    final_face_photo = await img_gen_service.download_user_photo_from_gcs(
+                        picture_uri, str(user_id)
+                    )
+                    if final_face_photo:
+                        photo_source = "用戶頭貼"
+                        logger.info(f"✅ 成功下載用戶頭貼")
+                    else:
+                        photo_source = "預設模特兒（頭貼下載失敗）"
+                        logger.warning(f"⚠️ 用戶頭貼下載返回 None")
                 except Exception as e:
-                    logger.warning(f"⚠️ PIL 驗證照片失敗，但仍將嘗試傳遞 Base64 給 Gemini: {e}")
-                    # 即使驗證失敗，只要 Base64 字串還在，就繼續嘗試
-
-                photo_source = "前端上傳照片（原始格式）"
-                logger.info(f"✅ 優先級 1: 成功載入前端上傳照片")
-                logger.info(f"🎯 保持原始品質，確保臉部辨識精度最高")
-        
-            except Exception as e:
-                logger.warning(f"⚠️ 優先級 1: 前端照片處理失敗，將嘗試用戶頭貼: {e}")
-                user_photo_base64 = None
-                photo_source = None  # 重置，讓後續邏輯嘗試頭貼
-
-        # 優先級 2: 用戶頭貼（次要優先級）- 只在沒有前端上傳照片時使用
-        if not user_photo_base64 and picture_uri and picture_uri.strip():
-            logger.info(f"📸 優先級 2: 沒有上傳照片，準備下載用戶頭貼")
-            logger.info(f"    原始 URI: '{picture_uri}'")
+                    logger.error(f"❌ 用戶頭貼下載異常: {e}")
+                    photo_source = "預設模特兒（下載異常）"
+            else:
+                photo_source = "預設模特兒（無頭貼）"
             
-            try:
-                # 🔥 使用與 image_generation.py 完全相同的調用方式
-                if picture_uri.startswith("gs://"):
-                    logger.info("    檢測到完整 GCS URI，直接下載")
-                    user_photo_base64 = await img_gen_service.download_user_photo_from_gcs(
-                        picture_uri,  # 位置參數 1：picture_uri
-                        str(user_id)       # 位置參數 2：user_id
-                    )
-                    photo_source = "用戶頭貼 (GCS完整URI)"
-                else:
-                    logger.info("    檢測到相對路徑，嘗試下載")
-                    user_photo_base64 = await img_gen_service.download_user_photo_from_gcs(
-                        picture_uri,
-                        str(user_id)
-                    )
-                    photo_source = "用戶頭貼（相對路徑）"
-                
-                if user_photo_base64:
-                    logger.info(f"✅ 成功下載並使用用戶頭貼！")
-                    logger.info(f"    Base64 長度: {len(user_photo_base64)} chars")
-                    logger.info(f"    Base64 預覽: {user_photo_base64[:50]}...")
-                else:
-                    logger.error(f"❌ 用戶頭貼下載返回 None！")
-                    logger.error(f"    URI: '{picture_uri}'")
-                    photo_source = "預設模特兒（頭貼下載失敗）"
-                    
-            except Exception as download_error:
-                logger.error(f"❌ 用戶頭貼下載異常！")
-                logger.error(f"    URI: '{picture_uri}'")
-                logger.error(f"    錯誤: {str(download_error)}", exc_info=True)
-                photo_source = "預設模特兒（下載異常）"
-        
-        # 優先級 3: 預設模特兒（最低優先級）
-        if not user_photo_base64:
-            logger.warning("⚠️ 優先級 3: 沒有上傳照片也沒有用戶頭貼")
-            logger.warning(f"    user_image_data: {bool(user_image_data)}")
-            logger.warning(f"    picture_uri: '{picture_uri}'")
-            logger.warning("    將使用預設模特兒")
-            photo_source = "預設模特兒（無可用照片）"
+            # 衣物來源：上傳的衣物圖片（最多2張）
+            final_clothing_items = [
+                {"name": f"上傳衣物_{idx+1}", "category": "tops", "img": img}
+                for idx, img in enumerate(clothing_images[:2])
+            ]
             
-        # 最終照片狀態確認
-        logger.info(f"\n{'='*60}")
-        logger.info(f"📸 最終照片與性別決策:")
-        logger.info(f"    照片來源: {photo_source}")
-        logger.info(f"    是否有用戶照片: {'是' if user_photo_base64 else '否'}")
-        logger.info(f"    用戶性別: {user_gender or '未提供 (預設 women)'}")
-        if user_photo_base64:
-            logger.info(f"    照片數據長度: {len(user_photo_base64)} characters")
-            logger.info(f"    照片數據預覽: {user_photo_base64[:50]}...")
-            logger.info(f"    ✅ 將使用用戶照片生成個性化穿搭圖")
+            logger.info(f"✅ {strategy}")
+            logger.info(f"   臉部: {photo_source}")
+            logger.info(f"   衣物: 使用 {len(final_clothing_items)} 件上傳衣物")
+            
         else:
-            logger.info(f"    ⚠️ 將使用預設模特兒（{user_gender or 'women'}）")
+            # 策略 4: 用戶頭貼 + 衣櫥衣物（原有功能）
+            strategy = "策略4: 用戶頭貼+衣櫥衣物"
+            
+            # 臉部來源：嘗試下載用戶頭貼
+            if picture_uri and picture_uri.strip():
+                try:
+                    final_face_photo = await img_gen_service.download_user_photo_from_gcs(
+                        picture_uri, str(user_id)
+                    )
+                    if final_face_photo:
+                        photo_source = "用戶頭貼"
+                    else:
+                        photo_source = "預設模特兒（頭貼下載失敗）"
+                except Exception as e:
+                    logger.error(f"❌ 用戶頭貼下載異常: {e}")
+                    photo_source = "預設模特兒（下載異常）"
+            else:
+                photo_source = "預設模特兒（無頭貼）"
+            
+            # 衣物來源：從衣櫥隨機選擇2件
+            clothing_dicts = [
+                {"name": item.name, "category": item.category, "img": item.cover_image_url}
+                for item in wardrobe_items if item.cover_image_url
+            ]
+            if len(clothing_dicts) > 2:
+                final_clothing_items = self._smart_select_clothing_items(clothing_dicts, max_items=2)
+            else:
+                final_clothing_items = clothing_dicts
+            
+            logger.info(f"✅ {strategy}")
+            logger.info(f"   臉部: {photo_source}")
+            logger.info(f"   衣物: 從衣櫥選擇 {len(final_clothing_items)} 件")
+        
+        # 最終決策確認
+        logger.info(f"\n{'='*60}")
+        logger.info(f"📸 最終組合決策:")
+        logger.info(f"    策略: {strategy}")
+        logger.info(f"    照片來源: {photo_source}")
+        logger.info(f"    是否有用戶照片: {'是' if final_face_photo else '否'}")
+        logger.info(f"    衣物數量: {len(final_clothing_items)}")
+        logger.info(f"    用戶性別: {user_gender or '未提供 (預設 women)'}")
         logger.info(f"{'='*60}\n")
 
         try:
@@ -577,39 +635,25 @@ class FashionAdvisor:
                     return {"type": "text", "text": "抱歉，目前無法獲取天氣資訊，請稍後再試。"}
             
             # 2️⃣ 檢查是否為穿搭請求
-            if self.is_outfit_request(user_input) and wardrobe_items:
+            if self.is_outfit_request(user_input):
                 logger.info("👗 偵測到穿搭請求，執行虛擬試穿。")
 
-                # 轉換 ClothingItem 列表為 Dict 列表
-                clothing_dicts = [
-                    {"name": item.name, "category": item.category, "img": item.cover_image_url}
-                    for item in wardrobe_items if item.cover_image_url
-                ]
-                logger.info(f"🧾 從衣櫃整理出 {len(clothing_dicts)} 件含圖片的衣物資料。")
-                
-                # 🎯 智能隨機挑選固定 2 件衣物（避免圖片過多影響臉部相似度，且每次都不同）
-                if len(clothing_dicts) > 2:
-                    logger.info(f"⚠️ 衣物數量 ({len(clothing_dicts)}) 超過 2 件，開始智能隨機挑選")
-                    clothing_dicts = self._smart_select_clothing_items(clothing_dicts, max_items=2)
-                    logger.info(f"✅ 已智能挑選 {len(clothing_dicts)} 件衣物用於生成穿搭圖")
-                elif len(clothing_dicts) < 2:
-                    logger.info(f"ℹ️ 衣物數量 ({len(clothing_dicts)}) 少於 2 件，將使用所有衣物")
-                else:
-                    logger.info(f"✅ 衣物數量剛好 2 件，將使用所有衣物")
-
-                if not clothing_dicts:
-                    logger.warning("衣櫃圖片 URL 皆為空，無法進行圖片生成，轉為文字建議。")
+                # 檢查是否有衣物可用（來自策略決策）
+                if not final_clothing_items:
+                    logger.warning("沒有可用的衣物（策略決策結果為空），無法進行圖片生成。")
                     return self._generate_outfit_fallback_text(user_input, wardrobe_items, weather_info, weather_advice)
+
+                logger.info(f"🧾 使用 {len(final_clothing_items)} 件衣物（來自{strategy}）")
 
                 # 使用 ImageGenerationService 的生成方法
                 logger.info(f"🛠️ 準備呼叫 img_gen_service.generate_tryon_image()")
                 logger.info(f"    📸 照片來源: {photo_source}")
-                logger.info(f"    📸 是否傳遞用戶照片: {'是' if user_photo_base64 else '否 (使用預設模特兒)'}")
+                logger.info(f"    📸 是否傳遞用戶照片: {'是' if final_face_photo else '否 (使用預設模特兒)'}")
 
                 generation_result = await img_gen_service.generate_tryon_image(
                     prompt=user_input,
-                    clothing_items=clothing_dicts,
-                    user_photo_base64=user_photo_base64  # 🔥 傳入正確處理的用戶照片
+                    clothing_items=final_clothing_items,  # 🔥 使用策略決策的衣物
+                    user_photo_base64=final_face_photo  # 🔥 使用策略決策的臉部照片
                 )
 
                 if generation_result.get("success"):

@@ -41,7 +41,7 @@ def ping():
 
 class ChatRequest(BaseModel):
     user_input: str
-    user_image_data: Optional[str] = None
+    user_images: Optional[list[str]] = None  # 🔥 改為列表，最多 3 張圖片
     lat: Optional[float] = None
     lon: Optional[float] = None
     city: Optional[str] = None
@@ -88,26 +88,33 @@ async def get_outfit_recommendation(
         raise HTTPException(status_code=500, detail="服務器內部錯誤：Advisor 未初始化")
 
     user_input = payload.user_input
-    user_image_data = payload.user_image_data
+    user_images = payload.user_images or []  # 🔥 接收圖片列表
+    
+    # 限制最多 3 張圖片
+    if len(user_images) > 3:
+        logger.warning(f"⚠️ 收到 {len(user_images)} 張圖片，超過限制（最多 3 張），將只使用前 3 張")
+        user_images = user_images[:3]
 
     if not user_input:
         logger.error("缺少 user_input")
         raise HTTPException(status_code=400, detail="缺少 user_input")
 
     try:
-        # 🔥 關鍵修正區塊：淨化 Base64 數據
-        cleaned_image_data = None
-        if user_image_data:
-            # 參考 virtual_fitting.py 的處理方式，移除 Data URI Scheme
-            if user_image_data.startswith("data:image"):
-                cleaned_image_data = (
-                    user_image_data.split(",", 1)[1]
-                    if "," in user_image_data
-                    else user_image_data
-                )
-                logger.info("✅ Chat API: 已移除 Data URI Scheme，淨化 Base64 數據")
-            else:
-                cleaned_image_data = user_image_data
+        # 🔥 關鍵修正區塊：淨化 Base64 數據（處理多張圖片）
+        cleaned_images = []
+        for idx, img_data in enumerate(user_images):
+            if img_data:
+                # 參考 virtual_fitting.py 的處理方式，移除 Data URI Scheme
+                if img_data.startswith("data:image"):
+                    cleaned_img = (
+                        img_data.split(",", 1)[1]
+                        if "," in img_data
+                        else img_data
+                    )
+                    logger.info(f"✅ Chat API: 圖片 {idx+1} 已移除 Data URI Scheme，淨化 Base64 數據")
+                else:
+                    cleaned_img = img_data
+                cleaned_images.append(cleaned_img)
 
         # 獲取用戶頭貼 URI
         picture_uri = current_user.picture if hasattr(current_user, 'picture') else None
@@ -156,7 +163,7 @@ async def get_outfit_recommendation(
         result = await advisor.process_user_input(
             user_id=user_id,
             user_input=user_input,
-            user_image_data=cleaned_image_data, # ⬅️ 傳遞淨化後的數據
+            user_images=cleaned_images,  # 🔥 傳遞多張淨化後的圖片
             picture_uri=picture_uri,
             user_gender=user_gender  # 🔥 傳遞用戶性別
         )
