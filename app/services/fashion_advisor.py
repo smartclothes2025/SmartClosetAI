@@ -218,7 +218,18 @@ class FashionAdvisor:
 
     def is_outfit_request(self, user_input: str) -> bool:
         """簡單判斷使用者是否在詢問穿搭"""
-        keywords = ["穿搭", "推薦", "搭配", "穿甚麼", "穿什麼", "怎麼穿", "穿衣", "服裝"]
+        keywords = [
+            # 基礎穿搭詞
+            "穿搭", "推薦", "搭配", "穿甚麼", "穿什麼", "怎麼穿", "穿衣", "服裝", "造型", "打扮",
+            # 場景詞
+            "運動", "約會", "上班", "出門", "逛街", "聚會", "派對", "面試", "旅遊", "休閒",
+            # 續問/再生成
+            "換一套", "再一套", "其他套", "其他的", "不喜歡", "不適合", "想改", "再看", "再來", "另一個",
+            # 明確要求生圖
+            "升圖", "生成圖", "生圖", "產生圖", "給我圖", "看圖", "幫我生成",
+            # 英文
+            "outfit", "style", "look", "wear", "OOTD"
+        ]
         is_request = any(word in user_input for word in keywords)
         logger.debug(f"判斷 '{user_input}' 是否為穿搭請求: {is_request}")
         return is_request
@@ -275,7 +286,7 @@ class FashionAdvisor:
 3. 搭配舒適的鞋子完成整體造型"""
             
             if weather_info:
-                response_text += f"\n\n🌤️ 今天{weather_info['city']}的溫度是 {weather_info['temperature']}°C，{weather_advice}"
+                response_text += f"\n\n🌤️ 根據您目前所在地區的天氣（{weather_info['temperature']}°C），{weather_advice}"
             
             return {"type": "text", "text": response_text}
         else:
@@ -301,7 +312,7 @@ class FashionAdvisor:
                 weather_context = f"""
 
 當前天氣資訊：
-- 地點：{weather_info['city']}
+- 地點：您目前所在地區
 - 溫度：{weather_info['temperature']}°C（體感溫度：{weather_info['feels_like']}°C）
 - 天氣狀況：{weather_info['weather_description']}
 - 濕度：{weather_info['humidity']}%
@@ -433,7 +444,10 @@ class FashionAdvisor:
         user_input: str, 
         user_images: Optional[List[str]] = None,
         picture_uri: Optional[str] = None,
-        user_gender: Optional[str] = None
+        user_gender: Optional[str] = None,
+        lat: Optional[float] = None,
+        lon: Optional[float] = None,
+        city: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         處理小助手的用戶輸入（聊天頁面）- 支援多圖片上傳
@@ -444,27 +458,31 @@ class FashionAdvisor:
             user_images: 前端上傳的照片列表 (base64)，最多 3 張
             picture_uri: 用戶頭貼 URI
             user_gender: 用戶性別
-            
-        四種圖片組合策略：
-            1. 上傳臉部 -> 用戶上傳的臉部 + 衣櫥的2件衣物
-            2. 上傳衣物 -> 用戶上傳的衣物 + 用戶頭貼
-            3. 上傳衣物+臉部 -> 用戶上傳的衣物 + 用戶上傳的臉部
-            4. 沒有上傳圖片 -> 用戶頭貼 + 衣櫥內衣物（原有功能）
+            lat: 用戶目前座標的緯度
+            lon: 用戶目前座標的經度
+            city: 用戶目前所在地區的城市名稱
         """
         logger.info(f"🤖 小助手處理請求：User ID: {user_id}")
         logger.info(f"   輸入: {user_input}")
         logger.info(f"   上傳圖片數量: {len(user_images) if user_images else 0}")
         
-        # 1. 獲取天氣資訊
+        # 1. 獲取天氣資訊（優先使用使用者目前座標）
         weather_info = None
         weather_advice = ""
         try:
             if weather_service:
-                weather_info = await weather_service.get_weather_info(city="Taoyuan")
+                if lat is not None and lon is not None:
+                    weather_info = await weather_service.get_weather_by_coordinates(lat=lat, lon=lon)
+                else:
+                    city_arg = city or "Taoyuan"
+                    weather_info = await weather_service.get_weather_info(city=city_arg)
+
                 if weather_info:
+                    if "suggestion" not in weather_info:
+                        weather_info["suggestion"] = weather_service.get_weather_based_clothing_advice(weather_info)
                     temp = weather_info.get("temperature", 20)
                     weather_advice = weather_info.get("suggestion", "")
-                    logger.info(f"🌤️ 天氣資訊：{weather_info['city']} {temp}°C - {weather_info.get('weather_description', '')}")
+                    logger.info(f"🌤️ 天氣資訊：您目前所在地區 {temp}°C - {weather_info.get('weather_description', '')}")
         except Exception as e:
             logger.warning(f"獲取天氣資訊失敗: {e}")
         
@@ -622,7 +640,7 @@ class FashionAdvisor:
             if self.is_weather_only_request(user_input):
                 logger.info("🌤️ 偵測到純天氣查詢，返回天氣資訊。")
                 if weather_info:
-                    weather_text = f"""📍 {weather_info['city']} 的天氣資訊：
+                    weather_text = f"""📍 您目前所在地區的天氣資訊：
 
     🌡️ 溫度：{weather_info['temperature']}°C（體感 {weather_info['feels_like']}°C）
     ☁️ 天氣：{weather_info['weather_description']}
@@ -669,8 +687,26 @@ class FashionAdvisor:
                     if generated_image_url:
                         logger.info(f"✅ 影像已生成並上傳，URL: {generated_image_url}")
                         
-                        # 使用簡單的訊息（只用 Gemini 生成）
-                        response_text = f"好的，這是為您生成的穿搭建議\n📸 照片來源: {photo_source}"
+                        # 建立詳細說明文字
+                        clothing_names = "、".join([item["name"] for item in final_clothing_items[:3]])
+                        if len(final_clothing_items) > 3:
+                            clothing_names += f" 等 {len(final_clothing_items)} 件"
+                        
+                        response_parts = [f"好的！這是為您生成的穿搭建議。"]
+                        
+                        # 加入天氣資訊
+                        if weather_info:
+                            response_parts.append(
+                                f"🌤️ 根據您目前所在地區的天氣（{weather_info['temperature']}°C，{weather_info['weather_description']}）"
+                            )
+                        
+                        # 加入衣櫃資訊
+                        if final_clothing_items:
+                            response_parts.append(f"👔 搭配您衣櫃裡的{clothing_names}")
+                        
+                        response_parts.append(f"📸 照片來源：{photo_source}")
+                        
+                        response_text = "\n".join(response_parts)
 
                         return {
                             "type": "image",

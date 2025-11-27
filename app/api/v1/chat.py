@@ -46,6 +46,75 @@ class ChatRequest(BaseModel):
     lon: Optional[float] = None
     city: Optional[str] = None
 
+# 常見問題（不需要呼叫 AI，只回固定說明）
+FAQ_ANSWERS: Dict[str, str] = {
+    # 衣櫃 / 上傳
+    "如何上傳衣服到衣櫃": (
+        "你可以在 App 中開啟『衣櫃』或『上傳衣物』頁面，選擇照片後填寫分類、顏色、品牌與標籤，送出後衣服就會被存進你的個人衣櫃，之後在衣櫃清單就看得到。"
+    ),
+    "如何查看我的衣櫃": (
+        "在 App 底部或主選單進入『衣櫃』頁面，就可以看到目前所有已上傳的衣物。你可以依分類、顏色等條件瀏覽，也可以點進單一衣物看詳細資訊。"
+    ),
+    "如何編輯衣物資訊": (
+        "先到『衣櫃』頁面，點選想修改的衣物，進入詳情後使用編輯按鈕，即可調整名稱、分類、顏色、風格或標籤，儲存後系統會更新資料。"
+    ),
+    "如何刪除衣物": (
+        "在『衣櫃』頁面點進某件衣物的詳情，使用刪除功能即可將這件衣物從衣櫃移除。刪除後無法復原，請先確認真的不再需要。"
+    ),
+
+    # 虛擬試衣
+    "如何使用虛擬試衣功能": (
+        "先從衣櫃勾選想試穿的幾件單品，接著進入『虛擬試衣』頁面。你可以上傳自己的照片或使用預設模特兒，再請 AI 生成穿搭圖，系統會根據你選的衣服產生試穿效果。"
+    ),
+    "虛擬試衣可以上傳幾件衣服": (
+        "虛擬試衣設計給多件單品一起搭配使用，實際可選件數會依前端頁面限制為主，一般情況下建議 2–5 件，包含上衣、下身、外套與配件。"
+    ),
+    "如何保存虛擬試衣結果": (
+        "在虛擬試衣頁面產生出 AI 穿搭圖後，填寫標題、描述與標籤，按下『保存穿搭』即可。系統會把結果存成一筆 Outfit，之後可以在穿搭記錄或日曆裡看到。"
+    ),
+    "如何分享虛擬試衣到貼文": (
+        "在虛擬試衣頁面勾選『同步發到貼文中』再按下『保存穿搭』，系統會同時建立一篇貼文，把這張 AI 穿搭圖發布到你的動態中。"
+    ),
+
+    # STYLESHOP 導購
+    "什麼是 STYLESHOP 導購": (
+        "STYLESHOP 導購是我們為你整理的精選單品與穿搭靈感，會依照風格與情境，把適合的商品集中在一個地方，讓你可以一邊看穿搭、一邊逛單品。"
+    ),
+    "如何使用 STYLESHOP 找到適合我的單品": (
+        "進入 STYLESHOP 區塊後，可以依照類別或風格瀏覽推薦單品；也可以把想要的風格或場合打給小助手，例如『幫我找約會風格的 STYLESHOP 單品』，我們會引導你使用相關功能。"
+    ),
+    "如何透過 STYLESHOP 直接購買": (
+        "在 STYLESHOP 裡找到喜歡的單品後，點進詳細資訊頁，依照畫面上的按鈕前往商品頁或購買連結，照著指示完成下單即可。實際流程會依目前版本介面為準。"
+    ),
+
+    # 貼文與社交
+    "如何發布穿搭貼文": (
+        "你可以在 App 中開啟『發佈貼文』或上傳頁面，選擇要分享的照片（可以是日常穿搭或虛擬試衣結果），填寫標題、文字內容與標籤後送出，就會在動態中看到這篇貼文。"
+    ),
+    "如何查看其他人的貼文": (
+        "前往動態 / 探索 / 社群相關頁面即可瀏覽其他使用者的穿搭貼文，向下滑動即可看到更多內容，點進單一貼文可以看大圖與詳細資訊。"
+    ),
+    "如何按讚和留言": (
+        "在貼文下方可以找到按讚與留言的按鈕，點讚可以表達喜歡，留言則可以和對方互動、留下穿搭心得或問題。實際按鈕位置會依目前介面設計為準。"
+    ),
+    "如何查看通知": (
+        "你可以在 App 中打開通知中心或訊息頁面，查看有人按讚、留言、追蹤你，或系統提醒等訊息。通常會以通知圖示或紅點提示有新事件。"
+    ),
+}
+
+
+def _normalize_question(text: str) -> str:
+    """將使用者輸入簡單正規化，用來比對 FAQ key。"""
+    s = (text or "").strip()
+    if not s:
+        return ""
+    # 統一全形問號
+    s = s.replace("？", "?")
+    if s.endswith("?"):
+        s = s[:-1]
+    return s
+
+
 @router.post("/")
 async def get_outfit_recommendation(
     payload: ChatRequest,
@@ -89,7 +158,7 @@ async def get_outfit_recommendation(
 
     user_input = payload.user_input
     user_images = payload.user_images or []  # 🔥 接收圖片列表
-    
+
     # 限制最多 3 張圖片
     if len(user_images) > 3:
         logger.warning(f"⚠️ 收到 {len(user_images)} 張圖片，超過限制（最多 3 張），將只使用前 3 張")
@@ -98,6 +167,13 @@ async def get_outfit_recommendation(
     if not user_input:
         logger.error("缺少 user_input")
         raise HTTPException(status_code=400, detail="缺少 user_input")
+
+    # 先處理內建 FAQ（操作教學 / STYLESHOP 導購等）
+    normalized_q = _normalize_question(user_input)
+    faq = FAQ_ANSWERS.get(normalized_q)
+    if faq:
+        logger.info(f"命中 FAQ 問題: {normalized_q}")
+        return {"type": "text", "text": faq}
 
     try:
         # 🔥 關鍵修正區塊：淨化 Base64 數據（處理多張圖片）
@@ -165,7 +241,10 @@ async def get_outfit_recommendation(
             user_input=user_input,
             user_images=cleaned_images,  # 🔥 傳遞多張淨化後的圖片
             picture_uri=picture_uri,
-            user_gender=user_gender  # 🔥 傳遞用戶性別
+            user_gender=user_gender,  # 🔥 傳遞用戶性別
+            lat=payload.lat,
+            lon=payload.lon,
+            city=payload.city,
         )
 
         logger.info(f"Advisor 返回結果: {result}")

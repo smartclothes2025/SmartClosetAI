@@ -13,6 +13,7 @@ from PIL import Image
 import json
 import logging
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from datetime import datetime, timezone
 
 # Import our image generation service
@@ -443,6 +444,43 @@ async def save_outfit_from_virtual_fitting(
             outfit.items = items
 
         db.add(outfit)
+
+        if payload.sync_to_post:
+            now = datetime.now(timezone.utc)
+            media_obj = [
+                {
+                    "type": "image",
+                    "gcs_uri": gcs_uri,
+                    "is_cover": True,
+                }
+            ]
+
+            sql = text(
+                """
+                INSERT INTO user_post
+                    (user_id, type, title, tag, content, media, visibility,
+                     like_count, comment_count, created_at, updated_at)
+                VALUES
+                    (:user_id, :type, :title, :tag, :content, :media, :visibility,
+                     :like_count, :comment_count, :created_at, :updated_at)
+                """
+            )
+            params = {
+                "user_id": getattr(current_user, "id", None),
+                "type": "post",
+                "title": (payload.title or "").strip(),
+                "tag": (payload.tags or "").strip(),
+                "content": (payload.description or "").strip(),
+                "media": json.dumps(media_obj),
+                "visibility": "public",
+                "like_count": 0,
+                "comment_count": 0,
+                "created_at": now,
+                "updated_at": now,
+            }
+
+            db.execute(sql, params)
+
         db.commit()
         db.refresh(outfit)
 

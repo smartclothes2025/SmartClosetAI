@@ -286,6 +286,7 @@ async def upload_clothes(
             raise HTTPException(status_code=500, detail=f"圖片上傳失敗: {str(gcs_error)}")
         
         # 6. 建立資料庫記錄（style 不受限制，可以是任何文字）
+        #    並在上傳當下初始化 last_worn_at，作為「最後穿著」起點
         item = WardrobeItem(
             user_id=current_user.id,
             name=name or safe_stem,
@@ -296,6 +297,7 @@ async def upload_clothes(
             attributes=attributes_dict,
             brand=attributes_dict.get("brand", ""),
             style=style if style else None,  # 直接使用 style，不驗證
+            last_worn_at=datetime.now(timezone.utc),
         )
         
         db.add(item)
