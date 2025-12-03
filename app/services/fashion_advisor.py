@@ -284,14 +284,15 @@ class FashionAdvisor:
 1. 選擇一件上衣搭配褲子或裙子
 2. 根據場合選擇合適的外套
 3. 搭配舒適的鞋子完成整體造型"""
-            
-            if weather_info:
-                response_text += f"\n\n🌤️ 根據您目前所在地區的天氣（{weather_info['temperature']}°C），{weather_advice}"
-            
+        
+        if weather_info:
+            response_text += f"\n\n🌤️ 根據 {weather_info.get('city', '當地')} 的天氣（{weather_info['temperature']}°C），{weather_advice}"
+        
             return {"type": "text", "text": response_text}
+        
         else:
             return {"type": "text", "text": "您的衣櫃目前是空的，請先上傳一些衣物照片，我才能為您提供穿搭建議！"}
-    
+
     def chat_with_gemini(self, user_input: str, wardrobe_items: List[ClothingItem], weather_info: Optional[Dict[str, Any]] = None, weather_advice: str = "") -> Dict[str, Any]:
         """
         使用 Gemini 模型進行一般聊天，並整合衣櫃清單和天氣資訊。
@@ -300,8 +301,8 @@ class FashionAdvisor:
         if not self.text_model:
             logger.error("Gemini 文本模型未初始化，無法執行聊天功能。")
             return {"type": "text", "text": "錯誤：聊天服務未正確設定。請檢查服務器的 Vertex AI/GCP 設定。"}
+        
         try:
-
             # 使用傳入的 wardrobe_items，不需要再次調用 get_wardrobe_items
             # 將 wardrobe_items 轉換為易於閱讀的描述
             wardrobe_summary = ", ".join([f"{item.category}: {item.name}" for item in wardrobe_items]) if wardrobe_items else "衣櫃目前是空的"
@@ -312,7 +313,7 @@ class FashionAdvisor:
                 weather_context = f"""
 
 當前天氣資訊：
-- 地點：您目前所在地區
+- 地點：{weather_info.get('city', '未知地區')}
 - 溫度：{weather_info['temperature']}°C（體感溫度：{weather_info['feels_like']}°C）
 - 天氣狀況：{weather_info['weather_description']}
 - 濕度：{weather_info['humidity']}%
@@ -329,7 +330,6 @@ class FashionAdvisor:
             response: GenerationResponse = self.text_model.generate_content(full_prompt)
                         
             # 檢查是否有候選回應以及內容
-
             if not response.candidates or not response.candidates[0].content.parts:
                 logger.warning("Gemini 模型回傳空的候選內容。")
                 return {"type": "text", "text": "抱歉，我暫時無法回答這個問題。"}
@@ -344,42 +344,13 @@ class FashionAdvisor:
             logger.info(f"Gemini 聊天回應: {gemini_text[:100]}...")
             return {"type": "text", "text": gemini_text}
         except Exception as e:
-            if ResourceExhausted and isinstance(e, ResourceExhausted):
-                logger.warning(f"與 Gemini 聊天時發生 ResourceExhausted 錯誤（429），返回友善回覆: {str(e)}")
-                # 返回友善的固定回覆，不顯示錯誤訊息
-                return {
-                    "type": "text",
-                    "text": "抱歉，我無法理解你說，請再試一次！您可以問我：\n\n👗 '今天穿什麼？'\n🌤️ '今天天氣如何？'\n💡 '推薦穿搭'\n\n我會根據您的衣櫃和天氣為您提供建議！"
-                }
             logger.error(f"與 Gemini 聊天時發生錯誤: {str(e)}", exc_info=True)
-            return {"type": "text", "text": f"服務器內部錯誤：{str(e)}"}
-
-
-    
-        
-    def _get_selected_clothing_items(self, user_id: str, selected_items: List[dict]) -> List[ClothingItem]:
-        """
-        根據前端傳入的精確 ID，從 GCS 檢查並獲取衣物的完整對象（包含 GCS URL）。
-        """
-        all_wardrobe_items = self.get_wardrobe_items(user_id) # 獲取所有衣物
-        # 假設前端傳入的 item 有 id 欄位，但此處未使用，保留原有邏輯
-        # selected_ids = {item.id for item in selected_items} 
-
-        final_items = []
-        for item_in in selected_items:
-            # 找到與 item_in 匹配的 GCS 上的真實衣物對象 (通常透過 ID)
-            matching_item = next((item for item in all_wardrobe_items if item.name == item_in['name'] and item.category == item_in['category']), None)
-
-            if matching_item:
-                 final_items.append(matching_item)
+            # 返回更友善的錯誤訊息，但不隱藏真實問題
+            if ResourceExhausted and isinstance(e, ResourceExhausted):
+                return {"type": "text", "text": "抱歉，目前服務繁忙（API 配額已滿），請稍後再試。"}
             else:
-                 # 如果找不到 GCS URL，至少保留其文字資訊，供 Gemini 參考
-                 final_items.append(ClothingItem(
-                     category=item_in['category'],
-                     name=item_in['name'],
-                     cover_image_url=None # 無圖片 URL
-                 ))
-        return final_items
+                return {"type": "text", "text": f"抱歉，處理您的問題時發生錯誤。請稍後再試或換個方式提問。"}
+
 
     def _smart_select_clothing_items(self, clothing_items: List[Dict[str, Any]], max_items: int = 2) -> List[Dict[str, Any]]:
         """智能隨機挑選 2 件衣物，確保生成圖片時臉部相似度更高"""
@@ -466,23 +437,21 @@ class FashionAdvisor:
         logger.info(f"   輸入: {user_input}")
         logger.info(f"   上傳圖片數量: {len(user_images) if user_images else 0}")
         
-        # 1. 獲取天氣資訊（優先使用使用者目前座標）
+        # 1. 獲取天氣資訊（🔥 強制使用桃園）
         weather_info = None
         weather_advice = ""
         try:
             if weather_service:
-                if lat is not None and lon is not None:
-                    weather_info = await weather_service.get_weather_by_coordinates(lat=lat, lon=lon)
-                else:
-                    city_arg = city or "Taoyuan"
-                    weather_info = await weather_service.get_weather_info(city=city_arg)
+                # 🔥 寫死使用桃園，忽略前端傳入的參數
+                logger.info(f"🏙️ 強制使用桃園獲取天氣（忽略前端參數 lat: {lat}, lon: {lon}, city: {city}）")
+                weather_info = await weather_service.get_weather_info(city="Taoyuan", country_code="TW")
 
                 if weather_info:
                     if "suggestion" not in weather_info:
                         weather_info["suggestion"] = weather_service.get_weather_based_clothing_advice(weather_info)
                     temp = weather_info.get("temperature", 20)
                     weather_advice = weather_info.get("suggestion", "")
-                    logger.info(f"🌤️ 天氣資訊：您目前所在地區 {temp}°C - {weather_info.get('weather_description', '')}")
+                    logger.info(f"🌤️ 天氣資訊：{weather_info.get('city', '未知地區')} {temp}°C - {weather_info.get('weather_description', '')}")
         except Exception as e:
             logger.warning(f"獲取天氣資訊失敗: {e}")
         
@@ -640,14 +609,14 @@ class FashionAdvisor:
             if self.is_weather_only_request(user_input):
                 logger.info("🌤️ 偵測到純天氣查詢，返回天氣資訊。")
                 if weather_info:
-                    weather_text = f"""📍 您目前所在地區的天氣資訊：
+                    weather_text = f"""📍 {weather_info.get('city', '未知地區')} 的天氣資訊：
 
-    🌡️ 溫度：{weather_info['temperature']}°C（體感 {weather_info['feels_like']}°C）
-    ☁️ 天氣：{weather_info['weather_description']}
-    💧 濕度：{weather_info['humidity']}%
-    💨 風速：{weather_info['wind_speed']} m/s
+🌡️ 溫度：{weather_info['temperature']}°C（體感 {weather_info['feels_like']}°C）
+☁️ 天氣：{weather_info['weather_description']}
+💧 濕度：{weather_info['humidity']}%
+💨 風速：{weather_info['wind_speed']} m/s
 
-    {weather_advice}"""
+{weather_advice}"""
                     return {"type": "text", "text": weather_text}
                 else:
                     return {"type": "text", "text": "抱歉，目前無法獲取天氣資訊，請稍後再試。"}
@@ -689,24 +658,7 @@ class FashionAdvisor:
                         
                         # 建立詳細說明文字
                         clothing_names = "、".join([item["name"] for item in final_clothing_items[:3]])
-                        if len(final_clothing_items) > 3:
-                            clothing_names += f" 等 {len(final_clothing_items)} 件"
-                        
-                        response_parts = [f"好的！這是為您生成的穿搭建議。"]
-                        
-                        # 加入天氣資訊
-                        if weather_info:
-                            response_parts.append(
-                                f"🌤️ 根據您目前所在地區的天氣（{weather_info['temperature']}°C，{weather_info['weather_description']}）"
-                            )
-                        
-                        # 加入衣櫃資訊
-                        if final_clothing_items:
-                            response_parts.append(f"👔 搭配您衣櫃裡的{clothing_names}")
-                        
-                        response_parts.append(f"📸 照片來源：{photo_source}")
-                        
-                        response_text = "\n".join(response_parts)
+                        response_text = f"好的，這是為您生成的穿搭建議\n📸 照片來源：{photo_source}"
 
                         return {
                             "type": "image",

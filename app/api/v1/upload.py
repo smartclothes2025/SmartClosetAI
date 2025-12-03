@@ -70,7 +70,6 @@ CATEGORY_NORMALIZE = {
     "shoes": "鞋子",
     "bags": "包包",
     "hats": "帽子",
-    "socks": "襪子",
     "accessories": "配件",
     "bottoms": "褲子",  # 以褲子作為下身的主分類
     # 已經是中文的直接通過

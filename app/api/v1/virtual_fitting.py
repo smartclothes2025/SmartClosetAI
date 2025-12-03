@@ -128,6 +128,99 @@ async def generate_virtual_fitting(
         if not request.selected_items:
             logger.warning("請求中沒有選擇任何衣物")
             raise HTTPException(status_code=400, detail="No clothing items selected")
+        
+        # ✨ 獲取用戶身體數據（身形類型和 BMI）
+        body_data = None
+        body_shape_type = None
+        bmi_value = None
+        bmi_category = None
+        
+        try:
+            # 從 body_metrics 表查詢用戶身體數據
+            body_metrics_query = text("""
+                SELECT height_cm, weight_kg, chest_cm, waist_cm, hip_cm, shoulder_cm, sex
+                FROM body_metrics
+                WHERE user_id = :user_id
+                LIMIT 1
+            """)
+            result = db.execute(body_metrics_query, {"user_id": current_user.id})
+            body_metrics = result.mappings().first()
+            
+            if body_metrics:
+                body_data = dict(body_metrics)
+                height_cm = body_data.get('height_cm')
+                weight_kg = body_data.get('weight_kg')
+                chest_cm = body_data.get('chest_cm')
+                waist_cm = body_data.get('waist_cm')
+                hip_cm = body_data.get('hip_cm')
+                shoulder_cm = body_data.get('shoulder_cm')
+                sex = body_data.get('sex', '女')
+                
+                # 計算 BMI
+                if height_cm and weight_kg and height_cm > 0:
+                    height_m = height_cm / 100
+                    bmi_value = round(weight_kg / (height_m * height_m), 1)
+                    
+                    # BMI 分類
+                    if bmi_value < 18.5:
+                        bmi_category = '體重過輕'
+                    elif bmi_value < 24:
+                        bmi_category = '正常範圍'
+                    elif bmi_value < 27:
+                        bmi_category = '過重'
+                    elif bmi_value < 30:
+                        bmi_category = '輕度肥胖'
+                    else:
+                        bmi_category = '中度肥胖'
+                    
+                    logger.info(f"用戶 BMI: {bmi_value} ({bmi_category})")
+                
+                # 判斷身形類型（女性）
+                if sex == '女' and all([chest_cm, waist_cm, hip_cm, shoulder_cm]):
+                    diff_bw = chest_cm - waist_cm  # 胸圍 - 腰圍
+                    diff_hw = hip_cm - waist_cm    # 臀圍 - 腰圍
+                    diff_bh = abs(chest_cm - hip_cm)  # 胸臀差
+                    shoulder_x2 = shoulder_cm * 2
+                    diff_hs = hip_cm - shoulder_x2  # 臀圍 - 肩寬×2
+                    diff_sh = shoulder_x2 - hip_cm  # 肩寬×2 - 臀圍
+                    
+                    # 按照前端相同的判斷順序
+                    if (diff_bw >= 12 and diff_bw <= 28) and (diff_hw >= 15 and diff_hw <= 33) and (diff_bh <= 7):
+                        body_shape_type = '沙漏型身材'
+                    elif diff_sh > 5:
+                        body_shape_type = '倒三角身材'
+                    elif diff_hs > 5 and hip_cm > chest_cm + 3:
+                        body_shape_type = '梨型身材'
+                    elif diff_bw < 15 or diff_hw < 20:
+                        body_shape_type = 'H型身材'
+                    elif waist_cm > hip_cm:
+                        body_shape_type = '蘋果型身材'
+                    else:
+                        body_shape_type = '標準身材'
+                    
+                    logger.info(f"用戶身形類型: {body_shape_type}")
+                
+                # 判斷身形類型（男性）
+                elif sex == '男' and all([waist_cm, hip_cm, shoulder_cm]):
+                    shoulder_x2 = shoulder_cm * 2
+                    diff_hs = hip_cm - shoulder_x2
+                    diff_sh = shoulder_x2 - hip_cm
+                    
+                    if waist_cm > hip_cm:
+                        body_shape_type = '蘋果型身材'
+                    elif diff_hs > 3:
+                        body_shape_type = '梨型身材'
+                    elif diff_sh > 3:
+                        body_shape_type = '倒三角身材'
+                    elif abs(diff_sh) < 3:
+                        body_shape_type = 'H型身材'
+                    else:
+                        body_shape_type = '標準身材'
+                    
+                    logger.info(f"用戶身形類型: {body_shape_type}")
+        
+        except Exception as e:
+            logger.warning(f"獲取身體數據失敗: {e}，將不使用身體數據生成")
 
         # ✅ 從資料庫重新獲取衣物資料，確保圖片 URL 是最新的 GCS URI
         items_dict = []
@@ -157,11 +250,14 @@ async def generate_virtual_fitting(
                 logger.warning(f"資料庫中找不到衣物 ID={item.id}，使用前端資料")
                 items_dict.append(item.dict())
 
-        # 建立 prompt（不使用身體數據）
+        # 建立 prompt（整合身體數據）
         prompt = image_service.create_fashion_prompt(
             clothing_items=items_dict,
             user_input=request.user_input,
             style="casual",
+            body_shape_type=body_shape_type,
+            bmi_value=bmi_value,
+            bmi_category=bmi_category,
         )
 
         # 處理用戶照片（優先級：上傳圖片 > 用戶頭貼 > 預設模特兒）
@@ -228,10 +324,18 @@ async def generate_virtual_fitting(
             logger.info(f"使用衣物圖片數量: {clothing_images_used}")
             logger.info(f"照片來源: {photo_source}")
 
-            generation_info = (
-                f"✅ 使用 {clothing_images_used} 張實際衣物圖片生成 (Image-to-Image)\n"
+            # 組合生成資訊
+            generation_info_parts = [
+                f"✅ 使用 {clothing_images_used} 張實際衣物圖片生成 (Image-to-Image)",
                 f"📸 照片來源: {photo_source}"
-            )
+            ]
+            
+            if body_shape_type:
+                generation_info_parts.append(f"👤 身形類型: {body_shape_type}")
+            if bmi_value and bmi_category:
+                generation_info_parts.append(f"📊 BMI: {bmi_value} ({bmi_category})")
+            
+            generation_info = "\n".join(generation_info_parts)
 
             return VirtualFittingResponse(
                 type="image",

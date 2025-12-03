@@ -167,8 +167,9 @@ class FaceSwapService:
                 result = self.swapper.get(result, target_face, source_face, paste_back=True)
                 logger.info(f"   迭代 {i+1}/{iterations} 完成")
             
-            # 增強處理
-            result = self._enhance_face_match(result, target_face)
+            # 🔥 移除美化處理，保持真實感
+            # result = self._enhance_face_match(result, target_face)  # 已停用
+            logger.info("✅ 保持原始臉部，未進行美化處理")
             
             # 計算相似度（簡化版本）
             similarity = self._calculate_similarity(source_face, target_face)
@@ -190,18 +191,23 @@ class FaceSwapService:
             return None
     
     def _enhance_face_match(self, img: np.ndarray, face) -> np.ndarray:
-        """增強臉部匹配效果"""
-        try:
-            # 銳化處理
-            img = self._sharpen_face(img, face)
-            
-            # 對比度增強
-            img = self._enhance_contrast(img, face)
-            
-            return img
-        except Exception as e:
-            logger.warning(f"增強處理失敗: {e}")
-            return img
+        """增強臉部匹配效果（已停用，保持真實感）"""
+        # 🔥 已停用所有美化處理，直接返回原始圖片
+        logger.info("⚠️ 美化處理已停用，保持真實臉部")
+        return img
+        
+        # 以下代碼已停用
+        # try:
+        #     # 銳化處理
+        #     img = self._sharpen_face(img, face)
+        #     
+        #     # 對比度增強
+        #     img = self._enhance_contrast(img, face)
+        #     
+        #     return img
+        # except Exception as e:
+        #     logger.warning(f"增強處理失敗: {e}")
+        #     return img
     
     def _sharpen_face(self, img: np.ndarray, face) -> np.ndarray:
         """銳化臉部區域"""

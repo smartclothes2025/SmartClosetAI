@@ -174,7 +174,14 @@ class ImageGenerationService:
             user_photo_base64: 可選的用戶臉部照片（base64 編碼）
         """
         try:
-            model = genai.GenerativeModel('gemini-2.5-flash-image')
+            # 嘗試使用的模型列表（按優先級排序）
+            models_to_try = [
+                'gemini-2.5-flash-image',  # 優先使用 2.5
+                'gemini-1.5-flash',         # 降級到 1.5
+            ]
+            
+            model_name = models_to_try[0]  # 預設使用第一個
+            model = genai.GenerativeModel(model_name)
             
             # Prepare content parts: text prompt + clothing images
             content_parts = []
@@ -245,7 +252,10 @@ Generate a new, single, photorealistic image that looks like a seamless edit of 
    - The person in the generated image **MUST be a perfect, photo-realistic clone** of the person in Image #1.
    - **COPY EXACTLY**: Their face shape, eyes, nose, mouth, eyebrows, skin tone, and any unique facial markings (moles, scars, wrinkles, age lines, etc.).
    - **COPY EXACTLY**: Their gender, age appearance, hair color, and hairstyle.
-   - **DO NOT** beautify, smooth, stylize, or model the face. The result must look like the user, **NOT** a professional model.
+   - **PRESERVE ALL IMPERFECTIONS**: Keep skin texture, pores, blemishes, dark circles, fine lines, wrinkles, and any natural skin characteristics EXACTLY as they appear in Image #1.
+   - **ABSOLUTELY NO BEAUTIFICATION**: Do NOT smooth skin, remove blemishes, brighten eyes, whiten teeth, or apply any beauty filters.
+   - **ABSOLUTELY NO AIRBRUSHING**: The face must look like a real, unedited photo with natural skin texture.
+   - **RAW REALISM REQUIRED**: The result must look like the user in their everyday life, **NOT** a professional model or edited photo.
    - **GENDER LOCK**: The person generated must have the same gender as Image #1.
    - **PRIORITIZE FACE MATCHING ABOVE ALL OTHER FACTORS.**
    - **FINAL OUTPUT FORMAT:** The final output **MUST BE a single image part** (PNG or JPEG) that contains the virtual try-on result. **DO NOT output text** except for the image part itself.
@@ -277,7 +287,8 @@ Generate a new, single, photorealistic image that looks like a seamless edit of 
    - **REALISM OVER ARTISTRY**: The final output must be a **Candid, realistic photo** taken with standard, non-studio lighting.
    - **POSE**: Natural, relaxed standing pose (mimicking a photo taken in a fitting room or by a friend).
    - **BACKGROUND**: Simple, non-distracting plain wall or domestic scene (e.g., a simple bedroom or hallway).
-   - **QUALITY**: Ultra-realistic, high-detail texture. **Avoid glossy, airbrushed, or professional photography styles.**
+   - **QUALITY**: Ultra-realistic, high-detail texture with natural imperfections. **Avoid glossy, airbrushed, or professional photography styles.**
+   - **NO POST-PROCESSING EFFECTS**: The image should look like it came straight from a smartphone camera with NO filters, NO beauty mode, NO skin smoothing.
 
 7. **USER'S ADDITIONAL REQUEST**: {prompt}
 
@@ -457,13 +468,15 @@ Now generate the virtual try-on image following ALL requirements above."""
                     "failed_items": failed_items
                 }
             
-            logger.info(f"🚀 開始調用 Gemini 2.5 Flash Image 模型...")
+            logger.info(f"🚀 開始調用 Gemini 模型: {model_name}")
             logger.info(f"   內容部分數量: {len(content_parts)} (1 prompt + {clothing_images_loaded} images)")
             
-            # Generate image with clothing images (with retry logic)
+            # Generate image with clothing images (with retry logic and model fallback)
             max_retries = 3
             retry_delay = 2
             last_error = None
+            response = None
+            current_model_index = 0
             
             for attempt in range(max_retries):
                 try:
@@ -479,6 +492,35 @@ Now generate the virtual try-on image following ALL requirements above."""
                     last_error = e
                     error_msg = str(e)
                     logger.warning(f"⚠️ 嘗試 {attempt + 1}/{max_retries} 失敗: {error_msg}")
+                    
+                    # 檢查是否是配額限制錯誤
+                    is_quota_error = (
+                        "quota" in error_msg.lower() or 
+                        "rate limit" in error_msg.lower() or
+                        "RESOURCE_EXHAUSTED" in error_msg or
+                        "free_tier" in error_msg.lower()
+                    )
+                    
+                    if is_quota_error:
+                        logger.warning(f"   ⚠️ 檢測到配額限制錯誤")
+                        
+                        # 嘗試降級到下一個模型
+                        if current_model_index + 1 < len(models_to_try):
+                            current_model_index += 1
+                            model_name = models_to_try[current_model_index]
+                            model = genai.GenerativeModel(model_name)
+                            logger.info(f"   🔄 降級到模型: {model_name}")
+                            continue
+                        else:
+                            logger.error(f"   ❌ 所有模型都達到配額限制")
+                            # 如果是最後一次嘗試，拋出異常
+                            if attempt == max_retries - 1:
+                                raise
+                            # 等待後重試
+                            wait_time = retry_delay * (attempt + 1)
+                            logger.info(f"   ⏳ 等待 {wait_time} 秒後重試...")
+                            await asyncio.sleep(wait_time)
+                            continue
                     
                     # 如果是最後一次嘗試，拋出異常
                     if attempt == max_retries - 1:
@@ -517,9 +559,10 @@ Now generate the virtual try-on image following ALL requirements above."""
                             "image_base64": image_base64,
                             "format": "base64",
                             "prompt": prompt,
-                            "service": "gemini-2.5-flash-image-with-clothing",
+                            "service": f"{model_name}-with-clothing",
                             "clothing_images_used": clothing_images_loaded,
-                            "method": "multimodal_with_actual_clothing_images"
+                            "method": "multimodal_with_actual_clothing_images",
+                            "model_used": model_name
                         }
                     elif hasattr(part, 'text'):
                         logger.warning(f"   ⚠️ 部分 {idx + 1} 包含文字而非圖片: {part.text[:100]}...")
@@ -549,11 +592,22 @@ Now generate the virtual try-on image following ALL requirements above."""
         self,
         clothing_items: list,
         user_input: str,
-        style: str = "casual"
+        style: str = "casual",
+        body_shape_type: Optional[str] = None,
+        bmi_value: Optional[float] = None,
+        bmi_category: Optional[str] = None
     ) -> str:
         """
         Create optimized prompt for fashion image generation
-        只需要照片，不需要身體數據
+        整合用戶身體數據（身形類型和 BMI）
+        
+        Args:
+            clothing_items: 衣物列表
+            user_input: 用戶輸入的描述
+            style: 風格
+            body_shape_type: 身形類型（沙漏型、梨型、倒三角等）
+            bmi_value: BMI 數值
+            bmi_category: BMI 分類（正常範圍、過重等）
         """
         # Build clothing description
         clothing_descriptions = []
@@ -578,15 +632,51 @@ Now generate the virtual try-on image following ALL requirements above."""
         
         clothing_text = ", ".join(clothing_descriptions)
         
-        # Create comprehensive prompt (不使用身體數據，指定亞洲模特兒)
-        prompt = f"""A Asian Taiwanese person wearing {clothing_text}, 
+        # 構建身體特徵描述
+        body_description_parts = []
+        
+        # 身形類型映射到英文描述
+        body_shape_map = {
+            '沙漏型身材': 'hourglass body shape with balanced bust and hip proportions, defined waist',
+            '梨型身材': 'pear body shape with fuller hips and thighs, narrower shoulders',
+            '倒三角身材': 'inverted triangle body shape with broader shoulders, narrower hips',
+            'H型身材': 'rectangular body shape with straight silhouette, minimal waist definition',
+            '蘋果型身材': 'apple body shape with fuller midsection, rounded torso',
+            '標準身材': 'balanced proportions'
+        }
+        
+        if body_shape_type and body_shape_type in body_shape_map:
+            body_description_parts.append(body_shape_map[body_shape_type])
+            logger.info(f"✨ 使用身形類型: {body_shape_type} -> {body_shape_map[body_shape_type]}")
+        
+        # BMI 映射到體型描述
+        if bmi_value and bmi_category:
+            bmi_description_map = {
+                '體重過輕': 'slim and lean build',
+                '正常範圍': 'healthy and fit physique',
+                '過重': 'slightly fuller build',
+                '輕度肥胖': 'fuller figure',
+                '中度肥胖': 'plus-size build'
+            }
+            
+            if bmi_category in bmi_description_map:
+                body_description_parts.append(bmi_description_map[bmi_category])
+                logger.info(f"✨ 使用 BMI: {bmi_value} ({bmi_category}) -> {bmi_description_map[bmi_category]}")
+        
+        # 組合身體描述
+        body_description = ", ".join(body_description_parts) if body_description_parts else "natural body proportions"
+        
+        # Create comprehensive prompt（整合身體數據）
+        prompt = f"""A Asian Taiwanese person with {body_description}, wearing {clothing_text}, 
         East Asian facial features,
         natural Asian skin tone,
         standing in a modern minimalist studio, 
         soft natural lighting, neutral background, 
-        full body shot, relaxed and casual pose,
-        detailed clothing texture, realistic fabric,
-        high facial realism and detail is critical"""
+        full body shot showing the complete outfit and body proportions,
+        relaxed and casual pose that flatters the body shape,
+        detailed clothing texture, realistic fabric that fits the body naturally,
+        high facial realism and detail is critical,
+        clothing should fit and drape naturally on the body type"""
         
         return prompt
     
